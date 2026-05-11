@@ -31,3 +31,13 @@ tests/       pytest suite (≥80 % coverage required)
 ```bash
 make test
 ```
+
+## Design Documentation
+
+See [docs/](docs/) for the full design picture:
+
+- [Architecture overview](docs/architecture.md) — component diagram, plugin pattern, IR, execution model
+- [Migration strategy](docs/migration-strategy.md) — 18-month plan, phased rollout, risk register
+- [Transformation mapping guide](docs/transformation-mapping-guide.md) — Informatica → YAML translation reference
+- [ADR log](docs/adr/) — Architecture Decision Records (ADR-001 through ADR-007)
+- [Brainstorming notes](docs/brainstorming/) — informal notes and explorations
