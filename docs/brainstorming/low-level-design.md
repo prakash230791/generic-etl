@@ -10,7 +10,7 @@
 
 ## 1. Purpose
 
-This document describes the internal implementation design for the VZ-ETL platform components: module structures, class hierarchies, data schemas, algorithm designs, error handling contracts, and integration patterns. It serves as the engineering reference during implementation.
+This document describes the internal implementation design for the Generic ETL platform components: module structures, class hierarchies, data schemas, algorithm designs, error handling contracts, and integration patterns. It serves as the engineering reference during implementation.
 
 ---
 
@@ -259,7 +259,7 @@ class ParameterResolver:
         return resolved
 
     def _resolve_watermark(self, key: str, default: Any) -> Any:
-        """Query vzetl_watermarks table; return default if key not found."""
+        """Query etl_watermarks table; return default if key not found."""
         ...
 
     def _resolve_secret(self, path: str) -> str:
@@ -279,8 +279,8 @@ class ParameterResolver:
 ```json
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://vzetl.internal/schema/job/v1",
-  "title": "VZ-ETL Job Configuration",
+  "$id": "https://etl.internal/schema/job/v1",
+  "title": "Generic ETL Job Configuration",
   "type": "object",
   "required": ["version", "job", "sources", "targets"],
   "additionalProperties": false,
@@ -520,7 +520,7 @@ EXAMPLE:
 
 ```
 EXCEPTION HIERARCHY:
-  VzetlError (base)
+  EtlError (base)
   ├── ConfigError
   │   ├── SchemaValidationError  → user error; report config file + line number
   │   └── ParameterResolutionError → config error; report missing param name
@@ -571,7 +571,7 @@ class WatermarkManager:
 
     # DDL (executed on first use):
     CREATE_TABLE = """
-    CREATE TABLE IF NOT EXISTS vzetl_watermarks (
+    CREATE TABLE IF NOT EXISTS etl_watermarks (
         key         VARCHAR(255) PRIMARY KEY,
         last_value  JSONB        NOT NULL,
         updated_at  TIMESTAMP    NOT NULL DEFAULT NOW(),
@@ -849,7 +849,7 @@ app = workflow.compile(checkpointer=PostgresSaver(conn=audit_db_conn))
 ### 11.1 Watermark Registry
 
 ```sql
-CREATE TABLE vzetl_watermarks (
+CREATE TABLE etl_watermarks (
     key         VARCHAR(255) PRIMARY KEY,
     last_value  JSONB        NOT NULL,
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -857,7 +857,7 @@ CREATE TABLE vzetl_watermarks (
     run_id      VARCHAR(64)              -- run_id that last updated
 );
 
-CREATE INDEX idx_watermarks_updated_at ON vzetl_watermarks(updated_at);
+CREATE INDEX idx_watermarks_updated_at ON etl_watermarks(updated_at);
 ```
 
 ### 11.2 Agent Audit Database
@@ -904,8 +904,8 @@ CREATE TABLE agent_gate_decisions (
 );
 
 -- LLM prompts and responses stored in S3 (audit trail)
--- Path: s3://vzetl-agent-audit/llm/{conversion_id}/{stage}/{timestamp}/prompt.txt
---        s3://vzetl-agent-audit/llm/{conversion_id}/{stage}/{timestamp}/response.txt
+-- Path: s3://etl-agent-audit/llm/{conversion_id}/{stage}/{timestamp}/prompt.txt
+--        s3://etl-agent-audit/llm/{conversion_id}/{stage}/{timestamp}/response.txt
 ```
 
 ### 11.3 Pipeline Metrics (Prometheus long-term storage)
@@ -915,20 +915,20 @@ All Prometheus metrics written to Amazon Managed Prometheus (AMP) with 15-month 
 ```yaml
 # recording_rules.yaml
 groups:
-  - name: vzetl_job_sla
+  - name: etl_job_sla
     interval: 5m
     rules:
-      - record: vzetl:job:success_rate_1h
-        expr: rate(vzetl_job_success_total[1h]) / rate(vzetl_job_total[1h])
+      - record: etl:job:success_rate_1h
+        expr: rate(etl_job_success_total[1h]) / rate(etl_job_total[1h])
 
-      - record: vzetl:job:p99_duration_1h
-        expr: histogram_quantile(0.99, rate(vzetl_job_duration_seconds_bucket[1h]))
+      - record: etl:job:p99_duration_1h
+        expr: histogram_quantile(0.99, rate(etl_job_duration_seconds_bucket[1h]))
 
-      - record: vzetl:tier:availability_30d
+      - record: etl:tier:availability_30d
         expr: >
           avg_over_time(
-            (sum by (tier) (rate(vzetl_job_success_total[5m]))
-            / sum by (tier) (rate(vzetl_job_total[5m])))[30d:5m]
+            (sum by (tier) (rate(etl_job_success_total[5m]))
+            / sum by (tier) (rate(etl_job_total[5m])))[30d:5m]
           )
 ```
 
@@ -952,12 +952,12 @@ On merge to main:
   ├── image build + push to ECR (dev tag)
   ├── image sign (cosign sign)
   ├── integration smoke test against dev EKS
-  └── update S3 configs (sync jobs/ to s3://vzetl-configs-dev/)
+  └── update S3 configs (sync jobs/ to s3://etl-configs-dev/)
 
 On release tag (vX.Y.Z):
   ├── all above
   ├── push to ECR (versioned tag + latest-stable)
-  ├── update S3 configs (sync to s3://vzetl-configs-prod/)
+  ├── update S3 configs (sync to s3://etl-configs-prod/)
   ├── Helm chart update (bump image tag in values.yaml)
   ├── ArgoCD sync (GitOps → deploys to EKS prod)
   └── release notes generated (from conventional commits)
@@ -974,13 +974,13 @@ Branch protection rules:
 New connectors and transformations register themselves via Python entry-points in `pyproject.toml`:
 
 ```toml
-[project.entry-points."vzetl.connectors"]
+[project.entry-points."etl.connectors"]
 sqlite      = "framework.connectors.sqlite:SqliteConnector"
 csv_file    = "framework.connectors.csv_file:CsvFileConnector"
 postgres    = "framework.connectors.postgres:PostgresConnector"
 sqlserver   = "framework.connectors.sqlserver:SqlServerConnector"
 
-[project.entry-points."vzetl.transformations"]
+[project.entry-points."etl.transformations"]
 filter      = "framework.transformations.filter:FilterTransformation"
 expression  = "framework.transformations.expression:ExpressionTransformation"
 lookup      = "framework.transformations.lookup:LookupTransformation"
@@ -996,7 +996,7 @@ class ConnectorRegistry:
     @classmethod
     def load_plugins(cls) -> None:
         """Discover and register all installed connector plugins."""
-        for ep in importlib.metadata.entry_points(group="vzetl.connectors"):
+        for ep in importlib.metadata.entry_points(group="etl.connectors"):
             cls._registry[ep.name] = ep.load()
 
     @classmethod
@@ -1013,7 +1013,7 @@ class ConnectorRegistry:
 ## 14. Configuration Loading Sequence
 
 ```
-vzetl-runner --config s3://vzetl-configs/jobs/load_dim_customer.yaml --run-id abc123
+etl-runner --config s3://etl-configs/jobs/load_dim_customer.yaml --run-id abc123
 
 1. CLI parses args → {config_path, run_id, dry_run, validate_only}
 

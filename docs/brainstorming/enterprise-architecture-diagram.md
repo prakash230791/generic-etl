@@ -20,7 +20,7 @@ The highest-level view: what the system does, who uses it, and what it replaces.
 ║   ──────────────────────────          ──────────────────────────────             ║
 ║                                                                                  ║
 ║   ┌──────────────────────┐            ┌──────────────────────────────┐           ║
-║   │  Informatica         │            │  VZ-ETL Framework            │           ║
+║   │  Informatica         │            │  Generic ETL Framework            │           ║
 ║   │  PowerCenter         │──retires──►│  (enterprise-owned runtime)  │           ║
 ║   │  ~450 pipelines      │            │  YAML-driven, container-based│           ║
 ║   │  $6.9M/yr TCO        │            │                              │           ║
@@ -65,7 +65,7 @@ The full system in context: all external systems the platform interacts with.
                                                 │ read / write
                                                 │
 ┌──────────────────┐               ╔════════════╧═════════════════════════════════╗
-│  LEGACY ETL      │               ║          VZ-ETL PLATFORM                     ║
+│  LEGACY ETL      │               ║          Generic ETL Platform                     ║
 │  ARTIFACTS       │  converts     ║                                              ║
 │                  │──────────────►║  ┌──────────────────┐  ┌──────────────────┐ ║
 │  Informatica XML │               ║  │ Migration Agent   │  │ ETL Framework    │ ║
@@ -95,16 +95,16 @@ The full system in context: all external systems the platform interacts with.
 
 The internal structure of the two core platform components.
 
-### L2a — VZ-ETL Framework (Runtime)
+### L2a — Generic ETL Framework (Runtime)
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════════╗
-║                               VZ-ETL FRAMEWORK                                      ║
-║                         Container image: vzetl:v{version}                           ║
+║                               Generic ETL Framework                                      ║
+║                         Container image: etl-runner:v{version}                           ║
 ╠══════════════════════════════════════════════════════════════════════════════════════╣
 ║                                                                                      ║
 ║  ┌────────────────────────────────────────────────────────────────────────────────┐  ║
-║  │  CLI  →  vzetl-runner --config <path> [--dry-run] [--validate] [--tier P0]    │  ║
+║  │  CLI  →  etl-runner --config <path> [--dry-run] [--validate] [--tier P0]    │  ║
 ║  └────────────────────────────────┬───────────────────────────────────────────────┘  ║
 ║                                   │                                                  ║
 ║  ┌────────────────────────────────▼───────────────────────────────────────────────┐  ║
@@ -244,7 +244,7 @@ The internal structure of the two core platform components.
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════════╗
-║  AWS ACCOUNT — VZ-ETL PLATFORM                                 Region: us-east-1    ║
+║  AWS ACCOUNT — Generic ETL Platform                                 Region: us-east-1    ║
 ╠═══════════════════════════════════════╦══════════════════════════════════════════════╣
 ║  DEVELOPER PLANE                      ║  DATA PLANE                                 ║
 ║                                       ║                                             ║
@@ -261,7 +261,7 @@ The internal structure of the two core platform components.
 ║             │                        ║  │  ┌─────────────────────────────────┐ │   ║
 ║             ▼                        ║  │  │  EKS Cluster                    │ │   ║
 ║  ┌─────────────────────┐              ║  │  │                                 │ │   ║
-║  │  GitHub Actions     │              ║  │  │  Job Pods (vzetl:v1.x)          │ │   ║
+║  │  GitHub Actions     │              ║  │  │  Job Pods (etl-runner:v1.x)          │ │   ║
 ║  │  CI/CD Pipeline     │              ║  │  │  ┌────┐ ┌────┐ ┌────┐ ┌────┐   │ │   ║
 ║  │  ┌───────────────┐  │              ║  │  │  │pod │ │pod │ │pod │ │pod │   │ │   ║
 ║  │  │ lint / test   │  │              ║  │  │  └────┘ └────┘ └────┘ └────┘   │ │   ║
@@ -323,7 +323,7 @@ The internal structure of the two core platform components.
 │  │  YAML Job Configs  (jobs/*.yaml)  — pure data, no cloud references            │  │
 │  └───────────────────────────────────────────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────────────────────────────────────────┐  │
-│  │  Container Image  (vzetl:v1.x.x)  — same image pushed to any registry        │  │
+│  │  Container Image  (etl-runner:v1.x.x)  — same image pushed to any registry        │  │
 │  └───────────────────────────────────────────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────────────────────────────────────────┐  │
 │  │  Framework Python Code  — zero cloud SDK references in framework/             │  │
@@ -373,16 +373,16 @@ The internal structure of the two core platform components.
 
  2. POD LAUNCH
     EKS control plane
-    ├── pulls vzetl:{version} from ECR (signed, policy-enforced)
+    ├── pulls etl-runner:{version} from ECR (signed, policy-enforced)
     ├── injects IRSA service account (read S3, read Secrets Manager)
     └── starts pod in job-execution namespace
 
  3. CONFIG RESOLUTION
-    vzetl-runner --config s3://vzetl-configs/jobs/load_dim_customer.yaml
+    etl-runner --config s3://etl-configs/jobs/load_dim_customer.yaml
     ├── Config Loader: downloads YAML from S3
     ├── JSON Schema Validator: validates against schema v{n}
     ├── Parameter Resolver:
-    │   ├── watermarks: SELECT last_load FROM vzetl_watermarks WHERE key = 'dim_customer'
+    │   ├── watermarks: SELECT last_load FROM etl_watermarks WHERE key = 'dim_customer'
     │   └── secrets: AWS Secrets Manager → src_sqlserver_prod connection string
     └── Policy Enforcer: checks tier P1 SLA rules, PII handling requirements
 
@@ -425,7 +425,7 @@ The internal structure of the two core platform components.
 
  6. POST-EXECUTION
     ├── Validation Engine: row_count_min, no_nulls(customer_id), unique_current_records
-    ├── Watermark Manager: UPDATE vzetl_watermarks SET last_load = MAX(load_ts)
+    ├── Watermark Manager: UPDATE etl_watermarks SET last_load = MAX(load_ts)
     ├── OpenLineage: emit dataset read/write events to Marquez
     ├── Prometheus: increment rows_processed, job_duration, job_success counters
     └── CloudWatch: structured log with run_id, job_name, rows_in, rows_out, duration_ms

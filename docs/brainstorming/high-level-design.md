@@ -10,9 +10,9 @@
 
 ## 1. Purpose
 
-This document describes the high-level design of the VZ-ETL platform — a two-component system comprising:
+This document describes the high-level design of the Generic ETL platform — a two-component system comprising:
 
-1. **VZ-ETL Framework** — an enterprise-owned, container-based, YAML-driven ETL runtime
+1. **Generic ETL Framework** — an enterprise-owned, container-based, YAML-driven ETL runtime
 2. **Migration Agent** — an AI-assisted multi-source pipeline conversion tool
 
 It defines component responsibilities, interfaces, data flows, integration contracts, and non-functional requirements at a level sufficient for architecture review and team scoping. Low-level implementation detail is in the companion Low-Level Design document.
@@ -78,7 +78,7 @@ Legacy ETL Artifacts          Pipeline Authors
                                        │
                                        ▼
                             ┌──────────────────────┐
-                            │  VZ-ETL Framework     │
+                            │  Generic ETL Framework     │
                             │  (container runtime)  │
                             │  reads YAML, runs job │
                             └──────────┬────────────┘
@@ -92,7 +92,7 @@ Legacy ETL Artifacts          Pipeline Authors
 
 ## 4. Component Descriptions
 
-### 4.1 VZ-ETL Framework
+### 4.1 Generic ETL Framework
 
 **What it is:** A Python-based container image that reads a YAML job configuration and executes a data integration pipeline: extract from source(s), apply transformations, load to target(s).
 
@@ -102,7 +102,7 @@ Legacy ETL Artifacts          Pipeline Authors
 
 | Sub-Component | Responsibility |
 |---|---|
-| CLI (`vzetl-runner`) | Entry point; parses arguments; drives the execution lifecycle |
+| CLI (`etl-runner`) | Entry point; parses arguments; drives the execution lifecycle |
 | Config Layer | Loads YAML from any storage backend; validates against JSON Schema; resolves parameters and secrets |
 | Execution Engine | Builds a DAG of nodes; selects execution backend; runs nodes in topological order |
 | Connector Registry | Plugin registry of all available source/target connectors; loaded via Python entry-points |
@@ -164,7 +164,7 @@ All transformations implement this contract. The engine knows nothing about tran
 
 ### 4.2 Migration Agent
 
-**What it is:** A multi-stage AI pipeline that converts Informatica XML and ADF JSON artifacts into VZ-ETL YAML configs, Airflow DAGs, dbt models, unit tests, and documentation. Designed as a build-time tool — not a production runtime.
+**What it is:** A multi-stage AI pipeline that converts Informatica XML and ADF JSON artifacts into Framework YAML configs, Airflow DAGs, dbt models, unit tests, and documentation. Designed as a build-time tool — not a production runtime.
 
 **What it is not:** Autonomous. All conversions require human review. Agent failure never impacts running framework jobs.
 
@@ -227,7 +227,7 @@ Routing decisions by confidence:
 
 **Technology:** Apache Airflow (Amazon MWAA on AWS; Cloud Composer on GCP; self-managed Helm on on-prem).
 
-**Role:** Schedule and trigger VZ-ETL framework jobs; manage inter-job dependencies; handle retries, SLA alerting, and failure notification.
+**Role:** Schedule and trigger Generic ETL Framework jobs; manage inter-job dependencies; handle retries, SLA alerting, and failure notification.
 
 **Key Pattern:**
 
@@ -243,9 +243,9 @@ Every framework job is a single `KubernetesPodOperator` task. The operator:
 ```python
 # Every framework job follows this template
 with DAG("load_dim_customer", schedule="0 2 * * *", ...) as dag:
-    run_job = VzetlOperator(  # Custom operator wrapping KubernetesPodOperator
+    run_job = EtlOperator(  # Custom operator wrapping KubernetesPodOperator
         task_id="run_load_dim_customer",
-        config_path="s3://vzetl-configs/jobs/load_dim_customer.yaml",
+        config_path="s3://etl-configs/jobs/load_dim_customer.yaml",
         tier="P1",
         resource_profile="medium",
     )
@@ -269,13 +269,13 @@ Every framework job emits four signal types without additional configuration:
 **Standard Metric Set (emitted by every job):**
 
 ```
-vzetl_job_rows_read_total{job, source_id, tier}
-vzetl_job_rows_written_total{job, target_id, tier}
-vzetl_job_duration_seconds{job, tier, backend}
-vzetl_job_errors_total{job, stage, error_type, tier}
-vzetl_job_retries_total{job, tier}
-vzetl_connector_query_duration_seconds{job, connector_type, operation}
-vzetl_transformation_duration_seconds{job, transformation_id, type}
+etl_job_rows_read_total{job, source_id, tier}
+etl_job_rows_written_total{job, target_id, tier}
+etl_job_duration_seconds{job, tier, backend}
+etl_job_errors_total{job, stage, error_type, tier}
+etl_job_retries_total{job, tier}
+etl_connector_query_duration_seconds{job, connector_type, operation}
+etl_transformation_duration_seconds{job, transformation_id, type}
 ```
 
 **SLA Dashboard per Tier:**
@@ -295,7 +295,7 @@ vzetl_transformation_duration_seconds{job, transformation_id, type}
 
 ### 5.1 Job Configuration Store
 
-YAML job configs are stored in S3 (`s3://vzetl-configs/jobs/`) with:
+YAML job configs are stored in S3 (`s3://etl-configs/jobs/`) with:
 - Version control: configs committed to Git; S3 sync on merge to main
 - Access: job pods read-only via IRSA; no write access from pods
 - Validation: configs validated in CI before S3 sync; invalid configs never reach prod S3
@@ -313,15 +313,15 @@ sources:
 ```
 
 At runtime, the Secrets Resolver maps `src_sqlserver_prod` to:
-- AWS: `arn:aws:secretsmanager:us-east-1:ACCOUNT:secret:vzetl/connections/src_sqlserver_prod`
-- GCP: `projects/PROJECT/secrets/vzetl-connections-src-sqlserver-prod`
-- On-prem: Vault path `secret/vzetl/connections/src_sqlserver_prod`
+- AWS: `arn:aws:secretsmanager:us-east-1:ACCOUNT:secret:etl/connections/src_sqlserver_prod`
+- GCP: `projects/PROJECT/secrets/etl-connections-src-sqlserver-prod`
+- On-prem: Vault path `secret/etl/connections/src_sqlserver_prod`
 
 The resolver implementation is pluggable — switching backends requires changing one config line.
 
 ### 5.3 Watermark Management
 
-Incremental pipelines track their last-processed timestamp/ID in a watermark registry (PostgreSQL table `vzetl_watermarks`):
+Incremental pipelines track their last-processed timestamp/ID in a watermark registry (PostgreSQL table `etl_watermarks`):
 
 ```
 Schema: (key VARCHAR PK, last_value JSONB, updated_at TIMESTAMP, updated_by VARCHAR)
@@ -338,7 +338,7 @@ The agent produces standard YAML configs that the framework consumes. The interf
 
 ```
 Agent produces:  migrations/wave1/<job>/jobs/<job>.yaml
-Framework reads: s3://vzetl-configs/jobs/<job>.yaml  (after review + merge)
+Framework reads: s3://etl-configs/jobs/<job>.yaml  (after review + merge)
 ```
 
 No runtime API between agent and framework. No framework code awareness in agent.
@@ -425,7 +425,7 @@ No runtime API between agent and framework. No framework code awareness in agent
 
 | Component | Technology | License | Notes |
 |---|---|---|---|
-| ETL runtime | VZ-ETL (Python 3.11+) | Enterprise-owned IP | This codebase |
+| ETL runtime | Generic ETL Framework (Python 3.11+) | Enterprise-owned IP | This codebase |
 | Migration agent | Python 3.11+ | Enterprise-owned IP | This codebase |
 | Agent AI orchestration | LangGraph | MIT | State machine for agent pipeline |
 | Agent LLM | Claude (via enterprise gateway) | Commercial (per-token) | Expression translation + analysis |

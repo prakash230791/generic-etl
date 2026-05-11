@@ -25,11 +25,11 @@ The combined ETL estate is estimated at **500–800 pipelines** across both syst
 
 This document proposes a two-component solution:
 
-**Component 1 — Custom Generic ETL Framework (VZ-ETL)**
+**Component 1 — Custom Generic ETL Framework (Generic ETL)**
 An enterprise-owned, in-house data integration platform: container-based, YAML-driven, cloud-agnostic, running on AWS today with zero re-architecture cost to move to GCP, Azure, or on-prem Kubernetes tomorrow. Built and owned by the enterprise. No vendor licensing. No external dependency on any single community.
 
 **Component 2 — Automated Migration Agent**
-An AI-assisted multi-source migration tool that converts Informatica XML and ADF JSON artifacts into VZ-ETL YAML configurations and Airflow DAGs at scale — dramatically compressing what would otherwise be a 3–4 year manual migration into a 12–14 month automated program.
+An AI-assisted multi-source migration tool that converts Informatica XML and ADF JSON artifacts into Framework YAML configurations and Airflow DAGs at scale — dramatically compressing what would otherwise be a 3–4 year manual migration into a 12–14 month automated program.
 
 ### 1.3 Why Not an Existing Open Source Tool
 
@@ -99,7 +99,7 @@ Operational consolidation is a board-level commitment. Data platform consolidati
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    COMPONENT 1: VZ-ETL FRAMEWORK                    │
+│                    COMPONENT 1: Generic ETL Framework                    │
 │                    (Enterprise-owned runtime)                        │
 │                                                                      │
 │   YAML Job Configs ──► Framework Runner ──► Data Systems            │
@@ -121,12 +121,12 @@ Operational consolidation is a board-level commitment. Data platform consolidati
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 VZ-ETL Framework Architecture
+### 3.2 Generic ETL Framework Architecture
 
 The framework is a **container-first, declarative, plugin-based data integration runtime** designed specifically for enterprise telecom workloads.
 
 **Design philosophy adapted from SeaTunnel:**
-SeaTunnel's architecture represents 7+ years of production refinement at scale. Its core design decisions — connector plugin interface, source/transform/sink separation, execution engine abstraction, configuration-as-code model — are the right decisions for enterprise ETL. VZ-ETL adopts these design principles, implements them in Python (vs. SeaTunnel's Java), and extends them with the enterprise governance layer the business requires.
+SeaTunnel's architecture represents 7+ years of production refinement at scale. Its core design decisions — connector plugin interface, source/transform/sink separation, execution engine abstraction, configuration-as-code model — are the right decisions for enterprise ETL. Generic ETL adopts these design principles, implements them in Python (vs. SeaTunnel's Java), and extends them with the enterprise governance layer the business requires.
 
 **What we take from SeaTunnel's design:**
 - Source → Transform → Sink pipeline model
@@ -152,10 +152,10 @@ SeaTunnel's architecture represents 7+ years of production refinement at scale. 
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                    VZ-ETL CONTAINER IMAGE                         │
+│                    ETL Container Image                         │
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────────┐  │
-│  │  CLI: vzetl-runner --config <path> [--dry-run] [--validate]│  │
+│  │  CLI: etl-runner --config <path> [--dry-run] [--validate]│  │
 │  └──────────────────────┬─────────────────────────────────────┘  │
 │                         ▼                                        │
 │  ┌────────────────────────────────────────────────────────────┐  │
@@ -323,7 +323,7 @@ Connections resolve via a pluggable `SecretsResolver`. The AWS implementation re
 │                                                                │
 │  ████████████████████████████████  100% portable              │
 │  YAML configs (jobs/*.yaml)                                    │
-│  Container image (vzetl:v1.x.x)                               │
+│  Container image (etl-runner:v1.x.x)                               │
 │                                                                │
 │  ████████████████████░░░░░░░░░░░░  90% portable               │
 │  Airflow DAG files                                             │
@@ -337,7 +337,7 @@ Connections resolve via a pluggable `SecretsResolver`. The AWS implementation re
 
 ### 3.3 Migration Agent Architecture
 
-The agent is a multi-stage AI pipeline that converts legacy ETL artifacts into VZ-ETL target artifacts. It is **not required for the framework to operate** — new pipelines can be authored directly in YAML.
+The agent is a multi-stage AI pipeline that converts legacy ETL artifacts into target ETL artifacts. It is **not required for the framework to operate** — new pipelines can be authored directly in YAML.
 
 #### 3.3.1 Pipeline Stages
 
@@ -388,11 +388,11 @@ Source Artifacts
        Production Cutover
 ```
 
-#### 3.3.2 Informatica → VZ-ETL Mapping
+#### 3.3.2 Informatica → Generic ETL Mapping
 
 Every Informatica concept has a direct equivalent:
 
-| Informatica | VZ-ETL Equivalent |
+| Informatica | Framework Equivalent |
 |---|---|
 | Mapping (XML) | `jobs/*.yaml` |
 | Source Qualifier | `sources[]` block |
@@ -409,9 +409,9 @@ Every Informatica concept has a direct equivalent:
 | Workflow Monitor | Airflow UI |
 | Session logs | Task logs → S3 → CloudWatch |
 
-#### 3.3.3 ADF → VZ-ETL Mapping
+#### 3.3.3 ADF → Generic ETL Mapping
 
-| ADF Concept | VZ-ETL Equivalent |
+| ADF Concept | Framework Equivalent |
 |---|---|
 | Pipeline | Airflow DAG |
 | Copy Activity | `sources[]` + `targets[]` |
@@ -531,7 +531,7 @@ The same Helm chart that deploys on EKS or GKE deploys on any Kubernetes distrib
 
 SeaTunnel's architecture represents the most battle-tested open source design for this problem class. Rather than adopting SeaTunnel (and its associated risks), we extract its proven design decisions:
 
-| SeaTunnel Design Pattern | How VZ-ETL Adopts It |
+| SeaTunnel Design Pattern | How Generic ETL Adopts It |
 |---|---|
 | Source → Transform → Sink pipeline model | Direct adoption — same three-stage pipeline |
 | Abstract connector interface (`TableSource`, `TableSink`) | Adapted to Python `BaseConnector` ABC |
@@ -541,11 +541,11 @@ SeaTunnel's architecture represents the most battle-tested open source design fo
 | Exactly-once semantics | Checkpoint + watermark pattern adopted |
 | Configuration-driven job definition | YAML schema, more expressive than SeaTunnel's HOCON |
 
-**Net result:** VZ-ETL inherits 7+ years of SeaTunnel architectural refinement, implemented in Python, with an enterprise governance layer, without any dependency on the SeaTunnel codebase, community, or supply chain.
+**Net result:** Generic ETL inherits 7+ years of SeaTunnel architectural refinement, implemented in Python, with an enterprise governance layer, without any dependency on the SeaTunnel codebase, community, or supply chain.
 
 ### 5.3 Build vs. Buy Analysis
 
-| Dimension | Commercial ETL (Informatica Cloud) | Adopt SeaTunnel | Custom VZ-ETL |
+| Dimension | Commercial ETL (Informatica Cloud) | Adopt SeaTunnel | Custom Generic ETL |
 |---|---|---|---|
 | Licensing cost | $1M–$3M/yr | $0 (OSS) | $0 |
 | Build investment | Low | Medium (extension) | High (purpose-built) |
@@ -580,7 +580,7 @@ SeaTunnel's architecture represents the most battle-tested open source design fo
 
 | Component | Build Rationale |
 |---|---|
-| VZ-ETL framework runner | Core runtime; must match enterprise governance requirements; Python-native |
+| Generic ETL Framework runner | Core runtime; must match enterprise governance requirements; Python-native |
 | YAML job schema (versioned) | Enterprise contract layer; must be stable and governed |
 | Connector library | Enterprise-specific sources (mainframe SFTP, Oracle with Instant Client, Azure SQL MI) |
 | Transformation library | Informatica-compatible semantics (SCD2, complex lookups, update strategy) |
@@ -827,9 +827,9 @@ Architecture Review Board reviews and approves:
 
 ### A. SeaTunnel Design Patterns Adopted
 
-The following SeaTunnel design decisions are adopted directly into VZ-ETL:
+The following SeaTunnel design decisions are adopted directly into Generic ETL:
 
-| SeaTunnel Pattern | Source Reference | VZ-ETL Adaptation |
+| SeaTunnel Pattern | Source Reference | Generic ETL Adaptation |
 |---|---|---|
 | `TableSource` / `TableSink` interface | SeaTunnel Connector API v2 | Python `BaseConnector` ABC with identical `read()` / `write()` contract |
 | `SeaTunnelTransform` interface | SeaTunnel Transform SPI | Python `BaseTransformation` ABC |
@@ -869,7 +869,7 @@ Phase 1 mandatory connectors (ordered by pipeline coverage impact):
 | Lineage | OpenLineage + Marquez | Apache 2.0 | Datakin / Apache |
 | Observability | Prometheus + Grafana | Apache 2.0 / AGPL | CNCF / Grafana Labs |
 | Secrets | AWS Secrets Manager | AWS commercial | Amazon |
-| ETL Runtime | VZ-ETL (custom) | Enterprise-owned IP | Built in-house |
+| ETL Runtime | Generic ETL Framework (custom) | Enterprise-owned IP | Built in-house |
 | Migration Agent | Custom (LangGraph) | Enterprise-owned IP | Built in-house |
 
 All open source components: Apache 2.0 or equivalent permissive license. All Western-origin or Apache Foundation governed. No components with Chinese-origin community concentration concerns.
