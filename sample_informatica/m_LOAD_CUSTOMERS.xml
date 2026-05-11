@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sample Informatica PowerCenter mapping export.
+  Mapping: m_LOAD_CUSTOMERS
+  Flow:
+    SQ_CUSTOMERS (Source Qualifier)
+      → FIL_ACTIVE_ONLY   (Filter: STATUS = 'ACTIVE')
+      → LKP_SEGMENTS      (Lookup: segments table on segment_code)
+      → EXP_DERIVE_FIELDS (Expression: full_name = CONCAT(first_name, ' ', last_name))
+      → TGT_DIM_CUSTOMER  (Target: dim_customer table)
+-->
+<POWERMART VERSION="8.6.1" EDITION="PowerCenter">
+  <REPOSITORY NAME="DEV_REPO" VERSION="186" CODEPAGE="UTF-8" DATABASETYPE="Oracle">
+    <FOLDER NAME="ETL_CUSTOMERS" GROUP="" OWNER="admin">
+
+      <!-- ═══════════════════════════════════════════════════════════════
+           SOURCE DEFINITION
+           ═══════════════════════════════════════════════════════════════ -->
+      <SOURCE BUSINESSNAME="" DATABASETYPE="SQLite" DBDNAME="source.db"
+              NAME="customers" OBJECTVERSION="1" OWNERNAME="" VERSIONNUMBER="1">
+        <SOURCEFIELD DATATYPE="integer"  FIELDNUMBER="1"  FIELDPROPERTY="0"
+                     NAME="customer_id"  NULLABLE="NULL"  PRECISION="10"/>
+        <SOURCEFIELD DATATYPE="varchar"  FIELDNUMBER="2"  FIELDPROPERTY="0"
+                     NAME="first_name"   NULLABLE="NULL"  PRECISION="100"/>
+        <SOURCEFIELD DATATYPE="varchar"  FIELDNUMBER="3"  FIELDPROPERTY="0"
+                     NAME="last_name"    NULLABLE="NULL"  PRECISION="100"/>
+        <SOURCEFIELD DATATYPE="varchar"  FIELDNUMBER="4"  FIELDPROPERTY="0"
+                     NAME="email"        NULLABLE="NULL"  PRECISION="200"/>
+        <SOURCEFIELD DATATYPE="varchar"  FIELDNUMBER="5"  FIELDPROPERTY="0"
+                     NAME="status"       NULLABLE="NULL"  PRECISION="20"/>
+        <SOURCEFIELD DATATYPE="varchar"  FIELDNUMBER="6"  FIELDPROPERTY="0"
+                     NAME="segment_code" NULLABLE="NULL"  PRECISION="10"/>
+      </SOURCE>
+
+      <!-- ═══════════════════════════════════════════════════════════════
+           TARGET DEFINITION
+           ═══════════════════════════════════════════════════════════════ -->
+      <TARGET BUSINESSNAME="" DATABASETYPE="SQLite" DBDNAME="target.db"
+              NAME="dim_customer" OBJECTVERSION="1" OWNERNAME="" VERSIONNUMBER="1">
+        <TARGETFIELD DATATYPE="integer"  FIELDNUMBER="1"  NAME="customer_id"/>
+        <TARGETFIELD DATATYPE="varchar"  FIELDNUMBER="2"  NAME="full_name"     PRECISION="200"/>
+        <TARGETFIELD DATATYPE="varchar"  FIELDNUMBER="3"  NAME="email"         PRECISION="200"/>
+        <TARGETFIELD DATATYPE="varchar"  FIELDNUMBER="4"  NAME="status"        PRECISION="20"/>
+        <TARGETFIELD DATATYPE="varchar"  FIELDNUMBER="5"  NAME="segment_code"  PRECISION="10"/>
+        <TARGETFIELD DATATYPE="varchar"  FIELDNUMBER="6"  NAME="segment_name"  PRECISION="50"/>
+      </TARGET>
+
+      <!-- ═══════════════════════════════════════════════════════════════
+           MAPPING
+           ═══════════════════════════════════════════════════════════════ -->
+      <MAPPING DESCRIPTION="Load active customers into dim_customer with segment enrichment"
+               ISVALID="YES" NAME="m_LOAD_CUSTOMERS" OBJECTVERSION="1" VERSIONNUMBER="1">
+
+        <!-- Source Qualifier -->
+        <TRANSFORMATION DESCRIPTION="Read all rows from customers table"
+                        NAME="SQ_CUSTOMERS" OBJECTVERSION="1"
+                        REUSABLE="NO" TYPE="Source Qualifier" VERSIONNUMBER="1">
+          <TRANSFORMFIELD DATATYPE="integer"  NAME="customer_id"  PORTTYPE="OUTPUT" PRECISION="10"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="first_name"   PORTTYPE="OUTPUT" PRECISION="100"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="last_name"    PORTTYPE="OUTPUT" PRECISION="100"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="email"        PORTTYPE="OUTPUT" PRECISION="200"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="status"       PORTTYPE="OUTPUT" PRECISION="20"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="segment_code" PORTTYPE="OUTPUT" PRECISION="10"/>
+          <TABLEATTRIBUTE NAME="Sql Query"    VALUE=""/>
+          <TABLEATTRIBUTE NAME="Source Table" VALUE="customers"/>
+        </TRANSFORMATION>
+
+        <!-- Filter: keep only ACTIVE customers -->
+        <TRANSFORMATION DESCRIPTION="Filter to ACTIVE customers only"
+                        NAME="FIL_ACTIVE_ONLY" OBJECTVERSION="1"
+                        REUSABLE="NO" TYPE="Filter" VERSIONNUMBER="1">
+          <TRANSFORMFIELD DATATYPE="integer"  NAME="customer_id"  PORTTYPE="INPUT/OUTPUT" PRECISION="10"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="first_name"   PORTTYPE="INPUT/OUTPUT" PRECISION="100"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="last_name"    PORTTYPE="INPUT/OUTPUT" PRECISION="100"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="email"        PORTTYPE="INPUT/OUTPUT" PRECISION="200"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="status"       PORTTYPE="INPUT/OUTPUT" PRECISION="20"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="segment_code" PORTTYPE="INPUT/OUTPUT" PRECISION="10"/>
+          <TABLEATTRIBUTE NAME="Filter Condition" VALUE="status = 'ACTIVE'"/>
+        </TRANSFORMATION>
+
+        <!-- Lookup: enrich with segment_name -->
+        <TRANSFORMATION DESCRIPTION="Look up segment_name from segments table"
+                        NAME="LKP_SEGMENTS" OBJECTVERSION="1"
+                        REUSABLE="NO" TYPE="Lookup Procedure" VERSIONNUMBER="1">
+          <TRANSFORMFIELD DATATYPE="integer"  NAME="customer_id"  PORTTYPE="INPUT/OUTPUT"  PRECISION="10"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="first_name"   PORTTYPE="INPUT/OUTPUT"  PRECISION="100"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="last_name"    PORTTYPE="INPUT/OUTPUT"  PRECISION="100"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="email"        PORTTYPE="INPUT/OUTPUT"  PRECISION="200"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="status"       PORTTYPE="INPUT/OUTPUT"  PRECISION="20"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="segment_code" PORTTYPE="INPUT/OUTPUT"  PRECISION="10"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="segment_name" PORTTYPE="OUTPUT"        PRECISION="50"/>
+          <TABLEATTRIBUTE NAME="Lookup table name"      VALUE="segments"/>
+          <TABLEATTRIBUTE NAME="Lookup condition"       VALUE="segments.segment_code = FIL_ACTIVE_ONLY.segment_code"/>
+          <TABLEATTRIBUTE NAME="Lookup DB Path"         VALUE="source.db"/>
+          <TABLEATTRIBUTE NAME="Return All Rows"        VALUE="NO"/>
+        </TRANSFORMATION>
+
+        <!-- Expression: derive full_name -->
+        <TRANSFORMATION DESCRIPTION="Derive full_name from first_name and last_name"
+                        NAME="EXP_DERIVE_FIELDS" OBJECTVERSION="1"
+                        REUSABLE="NO" TYPE="Expression" VERSIONNUMBER="1">
+          <TRANSFORMFIELD DATATYPE="integer"  NAME="customer_id"  PORTTYPE="INPUT/OUTPUT"  PRECISION="10"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="email"        PORTTYPE="INPUT/OUTPUT"  PRECISION="200"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="status"       PORTTYPE="INPUT/OUTPUT"  PRECISION="20"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="segment_code" PORTTYPE="INPUT/OUTPUT"  PRECISION="10"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="segment_name" PORTTYPE="INPUT/OUTPUT"  PRECISION="50"/>
+          <TRANSFORMFIELD DATATYPE="varchar"  NAME="full_name"    PORTTYPE="OUTPUT"        PRECISION="200"
+                          EXPRESSION="CONCAT(first_name, ' ', last_name)"/>
+        </TRANSFORMATION>
+
+        <!-- ─── Connector links ──────────────────────────────────────── -->
+        <!-- SQ_CUSTOMERS → FIL_ACTIVE_ONLY -->
+        <CONNECTOR FROMFIELD="customer_id"  FROMINSTANCE="SQ_CUSTOMERS"    FROMINSTANCETYPE="Source Qualifier"
+                   TOFIELD="customer_id"    TOINSTANCE="FIL_ACTIVE_ONLY"   TOINSTANCETYPE="Filter"/>
+        <CONNECTOR FROMFIELD="first_name"   FROMINSTANCE="SQ_CUSTOMERS"    FROMINSTANCETYPE="Source Qualifier"
+                   TOFIELD="first_name"     TOINSTANCE="FIL_ACTIVE_ONLY"   TOINSTANCETYPE="Filter"/>
+        <CONNECTOR FROMFIELD="last_name"    FROMINSTANCE="SQ_CUSTOMERS"    FROMINSTANCETYPE="Source Qualifier"
+                   TOFIELD="last_name"      TOINSTANCE="FIL_ACTIVE_ONLY"   TOINSTANCETYPE="Filter"/>
+        <CONNECTOR FROMFIELD="email"        FROMINSTANCE="SQ_CUSTOMERS"    FROMINSTANCETYPE="Source Qualifier"
+                   TOFIELD="email"          TOINSTANCE="FIL_ACTIVE_ONLY"   TOINSTANCETYPE="Filter"/>
+        <CONNECTOR FROMFIELD="status"       FROMINSTANCE="SQ_CUSTOMERS"    FROMINSTANCETYPE="Source Qualifier"
+                   TOFIELD="status"         TOINSTANCE="FIL_ACTIVE_ONLY"   TOINSTANCETYPE="Filter"/>
+        <CONNECTOR FROMFIELD="segment_code" FROMINSTANCE="SQ_CUSTOMERS"    FROMINSTANCETYPE="Source Qualifier"
+                   TOFIELD="segment_code"   TOINSTANCE="FIL_ACTIVE_ONLY"   TOINSTANCETYPE="Filter"/>
+
+        <!-- FIL_ACTIVE_ONLY → LKP_SEGMENTS -->
+        <CONNECTOR FROMFIELD="customer_id"  FROMINSTANCE="FIL_ACTIVE_ONLY" FROMINSTANCETYPE="Filter"
+                   TOFIELD="customer_id"    TOINSTANCE="LKP_SEGMENTS"      TOINSTANCETYPE="Lookup Procedure"/>
+        <CONNECTOR FROMFIELD="first_name"   FROMINSTANCE="FIL_ACTIVE_ONLY" FROMINSTANCETYPE="Filter"
+                   TOFIELD="first_name"     TOINSTANCE="LKP_SEGMENTS"      TOINSTANCETYPE="Lookup Procedure"/>
+        <CONNECTOR FROMFIELD="last_name"    FROMINSTANCE="FIL_ACTIVE_ONLY" FROMINSTANCETYPE="Filter"
+                   TOFIELD="last_name"      TOINSTANCE="LKP_SEGMENTS"      TOINSTANCETYPE="Lookup Procedure"/>
+        <CONNECTOR FROMFIELD="email"        FROMINSTANCE="FIL_ACTIVE_ONLY" FROMINSTANCETYPE="Filter"
+                   TOFIELD="email"          TOINSTANCE="LKP_SEGMENTS"      TOINSTANCETYPE="Lookup Procedure"/>
+        <CONNECTOR FROMFIELD="status"       FROMINSTANCE="FIL_ACTIVE_ONLY" FROMINSTANCETYPE="Filter"
+                   TOFIELD="status"         TOINSTANCE="LKP_SEGMENTS"      TOINSTANCETYPE="Lookup Procedure"/>
+        <CONNECTOR FROMFIELD="segment_code" FROMINSTANCE="FIL_ACTIVE_ONLY" FROMINSTANCETYPE="Filter"
+                   TOFIELD="segment_code"   TOINSTANCE="LKP_SEGMENTS"      TOINSTANCETYPE="Lookup Procedure"/>
+
+        <!-- LKP_SEGMENTS → EXP_DERIVE_FIELDS -->
+        <CONNECTOR FROMFIELD="customer_id"  FROMINSTANCE="LKP_SEGMENTS"    FROMINSTANCETYPE="Lookup Procedure"
+                   TOFIELD="customer_id"    TOINSTANCE="EXP_DERIVE_FIELDS" TOINSTANCETYPE="Expression"/>
+        <CONNECTOR FROMFIELD="email"        FROMINSTANCE="LKP_SEGMENTS"    FROMINSTANCETYPE="Lookup Procedure"
+                   TOFIELD="email"          TOINSTANCE="EXP_DERIVE_FIELDS" TOINSTANCETYPE="Expression"/>
+        <CONNECTOR FROMFIELD="status"       FROMINSTANCE="LKP_SEGMENTS"    FROMINSTANCETYPE="Lookup Procedure"
+                   TOFIELD="status"         TOINSTANCE="EXP_DERIVE_FIELDS" TOINSTANCETYPE="Expression"/>
+        <CONNECTOR FROMFIELD="segment_code" FROMINSTANCE="LKP_SEGMENTS"    FROMINSTANCETYPE="Lookup Procedure"
+                   TOFIELD="segment_code"   TOINSTANCE="EXP_DERIVE_FIELDS" TOINSTANCETYPE="Expression"/>
+        <CONNECTOR FROMFIELD="segment_name" FROMINSTANCE="LKP_SEGMENTS"    FROMINSTANCETYPE="Lookup Procedure"
+                   TOFIELD="segment_name"   TOINSTANCE="EXP_DERIVE_FIELDS" TOINSTANCETYPE="Expression"/>
+        <CONNECTOR FROMFIELD="first_name"   FROMINSTANCE="LKP_SEGMENTS"    FROMINSTANCETYPE="Lookup Procedure"
+                   TOFIELD="full_name"      TOINSTANCE="EXP_DERIVE_FIELDS" TOINSTANCETYPE="Expression"/>
+
+        <!-- EXP_DERIVE_FIELDS → TGT_DIM_CUSTOMER -->
+        <CONNECTOR FROMFIELD="customer_id"  FROMINSTANCE="EXP_DERIVE_FIELDS" FROMINSTANCETYPE="Expression"
+                   TOFIELD="customer_id"    TOINSTANCE="TGT_DIM_CUSTOMER"    TOINSTANCETYPE="Target Definition"/>
+        <CONNECTOR FROMFIELD="full_name"    FROMINSTANCE="EXP_DERIVE_FIELDS" FROMINSTANCETYPE="Expression"
+                   TOFIELD="full_name"      TOINSTANCE="TGT_DIM_CUSTOMER"    TOINSTANCETYPE="Target Definition"/>
+        <CONNECTOR FROMFIELD="email"        FROMINSTANCE="EXP_DERIVE_FIELDS" FROMINSTANCETYPE="Expression"
+                   TOFIELD="email"          TOINSTANCE="TGT_DIM_CUSTOMER"    TOINSTANCETYPE="Target Definition"/>
+        <CONNECTOR FROMFIELD="status"       FROMINSTANCE="EXP_DERIVE_FIELDS" FROMINSTANCETYPE="Expression"
+                   TOFIELD="status"         TOINSTANCE="TGT_DIM_CUSTOMER"    TOINSTANCETYPE="Target Definition"/>
+        <CONNECTOR FROMFIELD="segment_code" FROMINSTANCE="EXP_DERIVE_FIELDS" FROMINSTANCETYPE="Expression"
+                   TOFIELD="segment_code"   TOINSTANCE="TGT_DIM_CUSTOMER"    TOINSTANCETYPE="Target Definition"/>
+        <CONNECTOR FROMFIELD="segment_name" FROMINSTANCE="EXP_DERIVE_FIELDS" FROMINSTANCETYPE="Expression"
+                   TOFIELD="segment_name"   TOINSTANCE="TGT_DIM_CUSTOMER"    TOINSTANCETYPE="Target Definition"/>
+
+        <!-- ─── Instance references ──────────────────────────────────── -->
+        <INSTANCE NAME="SQ_CUSTOMERS"     REUSABLE="NO" TRANSFORMATION_NAME="SQ_CUSTOMERS"
+                   TRANSFORMATION_TYPE="Source Qualifier" TYPE="TRANSFORMATION"/>
+        <INSTANCE NAME="FIL_ACTIVE_ONLY"  REUSABLE="NO" TRANSFORMATION_NAME="FIL_ACTIVE_ONLY"
+                   TRANSFORMATION_TYPE="Filter" TYPE="TRANSFORMATION"/>
+        <INSTANCE NAME="LKP_SEGMENTS"     REUSABLE="NO" TRANSFORMATION_NAME="LKP_SEGMENTS"
+                   TRANSFORMATION_TYPE="Lookup Procedure" TYPE="TRANSFORMATION"/>
+        <INSTANCE NAME="EXP_DERIVE_FIELDS" REUSABLE="NO" TRANSFORMATION_NAME="EXP_DERIVE_FIELDS"
+                   TRANSFORMATION_TYPE="Expression" TYPE="TRANSFORMATION"/>
+        <INSTANCE NAME="TGT_DIM_CUSTOMER"  REUSABLE="NO" TRANSFORMATION_NAME="dim_customer"
+                   TRANSFORMATION_TYPE="Target Definition" TYPE="TARGET"/>
+
+      </MAPPING>
+    </FOLDER>
+  </REPOSITORY>
+</POWERMART>

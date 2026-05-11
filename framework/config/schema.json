@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "etl-poc/job-config/v1",
+  "title": "ETL Job Configuration",
+  "type": "object",
+  "required": ["job", "source", "sink"],
+  "additionalProperties": false,
+  "properties": {
+    "job": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name":    { "type": "string" },
+        "version": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["type", "config"],
+      "properties": {
+        "type":   { "type": "string" },
+        "config": { "type": "object" }
+      }
+    },
+    "transformations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "config"],
+        "properties": {
+          "name":   { "type": "string" },
+          "type":   { "type": "string" },
+          "config": { "type": "object" }
+        }
+      }
+    },
+    "sink": {
+      "type": "object",
+      "required": ["type", "config"],
+      "properties": {
+        "type":   { "type": "string" },
+        "config": { "type": "object" }
+      }
+    }
+  }
+}

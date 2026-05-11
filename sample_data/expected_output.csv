@@ -1,0 +1,7 @@
+customer_id,first_name,last_name,email,status,segment_code,segment_name,full_name
+1,Alice,Smith,alice@example.com,ACTIVE,C001,Premium,Alice Smith
+3,Carol,White,carol@example.com,ACTIVE,C003,Premium,Carol White
+4,David,Brown,david@example.com,ACTIVE,C004,Trial,David Brown
+6,Frank,Miller,frank@example.com,ACTIVE,C001,Premium,Frank Miller
+7,Grace,Wilson,grace@example.com,ACTIVE,C003,Premium,Grace Wilson
+8,Hank,Moore,hank@example.com,ACTIVE,C002,Standard,Hank Moore

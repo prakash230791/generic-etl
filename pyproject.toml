@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etl-poc"
+version = "0.1.0"
+description = "ETL modernisation POC — Informatica → YAML framework"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2",
+    "pyyaml>=6.0",
+    "jsonschema>=4.22",
+    "anthropic>=0.28",
+    "lxml>=5.2",
+    "click>=8.1",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+etl-run   = "framework.runner:main"
+etl-agent = "agent.cli:main"
+
+[project.entry-points."etl.connectors"]
+sqlite   = "framework.connectors.sqlite:SQLiteConnector"
+csv_file = "framework.connectors.csv_file:CSVFileConnector"
+
+[project.entry-points."etl.transformations"]
+filter     = "framework.transformations.filter:FilterTransformation"
+lookup     = "framework.transformations.lookup:LookupTransformation"
+expression = "framework.transformations.expression:ExpressionTransformation"
+scd_type_2 = "framework.transformations.scd_type_2:SCDType2Transformation"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["framework*", "agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "--cov=framework --cov=agent --cov-report=term-missing"
+# --cov-fail-under=80 re-enabled once all phases are implemented
+filterwarnings = [
+    # Python 3.13 leaks ResourceWarnings from its own internal SQLite metadata
+    # cache (contextlib/collections internals) — not from our code.
+    "ignore::ResourceWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
