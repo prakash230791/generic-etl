@@ -1,620 +1,628 @@
 # Enterprise ETL Modernization — Architecture Diagrams
 
 **Document Type:** Architecture Diagrams (L0 → L3)
-**Version:** 1.0
+**Version:** 2.0
 **Date:** 2026-05-11
 **Classification:** Internal — Architecture Review
 
 ---
 
-## L0 — Business Context Diagram
+## L0 — Business Context
 
-The highest-level view: what the system does, who uses it, and what it replaces.
+What the program replaces, who it serves, and the financial outcome.
 
-```
-╔══════════════════════════════════════════════════════════════════════════════════╗
-║                        ENTERPRISE TELECOM — DATA PLATFORM                        ║
-╠══════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                  ║
-║   LEGACY ESTATE (retiring)            MODERN PLATFORM (target)                  ║
-║   ──────────────────────────          ──────────────────────────────             ║
-║                                                                                  ║
-║   ┌──────────────────────┐            ┌──────────────────────────────┐           ║
-║   │  Informatica         │            │  Generic ETL Framework            │           ║
-║   │  PowerCenter         │──retires──►│  (enterprise-owned runtime)  │           ║
-║   │  ~450 pipelines      │            │  YAML-driven, container-based│           ║
-║   │  $6.9M/yr TCO        │            │                              │           ║
-║   └──────────────────────┘            │  Runs on AWS today           │           ║
-║                                       │  GCP / On-prem tomorrow      │           ║
-║   ┌──────────────────────┐            └──────────────┬───────────────┘           ║
-║   │  Azure Data Factory  │                           │                           ║
-║   │  ~250 pipelines      │──retires──►  ─────────────┘                           ║
-║   │  $1.1M/yr TCO        │                                                       ║
-║   └──────────────────────┘            ┌──────────────────────────────┐           ║
-║                                       │  Migration Agent             │           ║
-║   ACTORS                              │  (AI-assisted converter)     │           ║
-║   ──────                              │  Informatica XML → YAML      │           ║
-║   • ETL Engineers    ────────────────►│  ADF JSON → YAML             │           ║
-║   • Platform Team    ────────────────►│  LangGraph + Claude API      │           ║
-║   • Business SMEs    (review gates)──►└──────────────────────────────┘           ║
-║   • Executive Sponsor (funding)                                                  ║
-║                                       ANNUAL COST TARGET: $2M/yr                ║
-║   CURRENT ANNUAL COST: $8M/yr         (75% reduction, 18-month program)         ║
-╚══════════════════════════════════════════════════════════════════════════════════╝
-```
+```mermaid
+flowchart TB
+    subgraph LEGACY["🔴 Legacy Estate — $8M/yr"]
+        direction LR
+        IPC["Informatica PowerCenter\n~450 pipelines\n$6.9M/yr TCO\n⚠ Support ended Mar 2026"]
+        ADF["Azure Data Factory\n~250 pipelines\n$1.1M/yr TCO\n⚠ Frozen — moving to Fabric"]
+    end
 
----
+    subgraph ACTORS["Actors"]
+        direction TB
+        ENG["ETL Engineers"]
+        SME["Business SMEs"]
+        OPS["Platform / Ops Team"]
+        EXEC["Executive Sponsor"]
+    end
 
-## L1 — System Context Diagram
+    subgraph PLATFORM["🟢 Modern Platform — $2M/yr"]
+        direction LR
+        FW["Generic ETL Framework\nContainer-based · YAML-driven\nAWS today · GCP/On-prem tomorrow"]
+        AGENT["Migration Agent\nAI-assisted converter\nInformatica XML → YAML\nADF JSON → YAML"]
+    end
 
-The full system in context: all external systems the platform interacts with.
+    subgraph OUTCOME["Program Outcome"]
+        direction LR
+        S1["75% cost reduction\n$6M/yr saved"]
+        S2["700 pipelines migrated\nin 14 months"]
+        S3["Full platform ownership\nZero vendor licensing"]
+    end
 
-```
-                         ┌──────────────────────────────────────────────────────────┐
-                         │                EXTERNAL DATA SYSTEMS                     │
-                         │                                                          │
-                         │  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
-                         │  │ SQL      │  │ Oracle   │  │ Azure    │              │
-                         │  │ Server   │  │ DB       │  │ SQL MI   │              │
-                         │  └────┬─────┘  └────┬─────┘  └────┬─────┘              │
-                         │       │             │             │                      │
-                         │  ┌────┴─────┐  ┌────┴──────┐  ┌──┴───────┐             │
-                         │  │ Postgres │  │ Mainframe │  │ S3 / GCS │             │
-                         │  └──────────┘  └───────────┘  └──────────┘             │
-                         └──────────────────────┬───────────────────────────────────┘
-                                                │ read / write
-                                                │
-┌──────────────────┐               ╔════════════╧═════════════════════════════════╗
-│  LEGACY ETL      │               ║          Generic ETL Platform                     ║
-│  ARTIFACTS       │  converts     ║                                              ║
-│                  │──────────────►║  ┌──────────────────┐  ┌──────────────────┐ ║
-│  Informatica XML │               ║  │ Migration Agent   │  │ ETL Framework    │ ║
-│  ADF JSON        │               ║  │ (build-time tool) │  │ (runtime)        │ ║
-│  Parameter files │               ║  └──────────┬────────┘  └──────────────────┘ ║
-└──────────────────┘               ║             │ generates YAML                 ║
-                                   ╚═════════════╧════════════════════════════════╝
-                                                 │
-               ┌─────────────────────────────────┼─────────────────────────────────┐
-               │                                 │                                 │
-               ▼                                 ▼                                 ▼
-  ┌────────────────────┐           ┌─────────────────────┐           ┌─────────────────────┐
-  │  ORCHESTRATION     │           │  OBSERVABILITY       │           │  SECURITY            │
-  │                    │           │                     │           │                     │
-  │  Apache Airflow    │           │  Prometheus +        │           │  AWS Secrets Mgr     │
-  │  (MWAA on AWS)     │           │  Grafana             │           │  HashiCorp Vault      │
-  │  DAG per pipeline  │           │  OpenTelemetry       │           │  Image signing        │
-  │  KubePodOperator   │           │  OpenLineage         │           │  (cosign)            │
-  └────────────────────┘           │  Marquez (lineage)   │           │  NetworkPolicies      │
-                                   │  CloudWatch / SIEM   │           │  RBAC / IRSA          │
-                                   └─────────────────────┘           └─────────────────────┘
+    IPC -- "AI-assisted migration" --> AGENT
+    ADF -- "AI-assisted migration" --> AGENT
+    AGENT -- "generates YAML configs" --> FW
+    ACTORS --> PLATFORM
+    PLATFORM --> OUTCOME
+
+    style LEGACY fill:#4a1010,stroke:#c0392b,color:#fff
+    style PLATFORM fill:#0d3b2e,stroke:#27ae60,color:#fff
+    style OUTCOME fill:#1a2a4a,stroke:#2e86c1,color:#fff
+    style ACTORS fill:#2c2c2c,stroke:#7f8c8d,color:#fff
 ```
 
 ---
 
-## L2 — Component Architecture Diagram
+## L1 — System Context
 
-The internal structure of the two core platform components.
+The full platform in context — all external systems it interacts with.
 
-### L2a — Generic ETL Framework (Runtime)
+```mermaid
+flowchart TB
+    subgraph SOURCES["Data Sources"]
+        direction LR
+        SQLS["SQL Server"]
+        ORA["Oracle"]
+        AZS["Azure SQL MI"]
+        PG["PostgreSQL"]
+        MF["Mainframe\nSFTP / EBCDIC"]
+        S3["S3 / GCS / ADLS"]
+        RMQ["RabbitMQ / Kafka"]
+    end
 
-```
-╔══════════════════════════════════════════════════════════════════════════════════════╗
-║                               Generic ETL Framework                                      ║
-║                         Container image: etl-runner:v{version}                           ║
-╠══════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                      ║
-║  ┌────────────────────────────────────────────────────────────────────────────────┐  ║
-║  │  CLI  →  etl-runner --config <path> [--dry-run] [--validate] [--tier P0]    │  ║
-║  └────────────────────────────────┬───────────────────────────────────────────────┘  ║
-║                                   │                                                  ║
-║  ┌────────────────────────────────▼───────────────────────────────────────────────┐  ║
-║  │  CONFIG LAYER                                                                  │  ║
-║  │                                                                                │  ║
-║  │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────────┐ │  ║
-║  │  │  Config Loader   │  │  JSON Schema     │  │  Parameter Resolver          │ │  ║
-║  │  │  s3:// gs://     │  │  Validator       │  │  watermarks / secrets / vars │ │  ║
-║  │  │  file:// http:// │  │  v1, v2, v3...   │  │  AWS Secrets Manager / Vault │ │  ║
-║  │  └──────────────────┘  └──────────────────┘  └──────────────────────────────┘ │  ║
-║  │  ┌──────────────────────────────────────────────────────────────────────────┐  │  ║
-║  │  │  Policy Enforcer — tier rules, PII policy, data classification           │  │  ║
-║  │  └──────────────────────────────────────────────────────────────────────────┘  │  ║
-║  └────────────────────────────────┬───────────────────────────────────────────────┘  ║
-║                                   │                                                  ║
-║  ┌────────────────────────────────▼───────────────────────────────────────────────┐  ║
-║  │  EXECUTION ENGINE                                                              │  ║
-║  │                                                                                │  ║
-║  │  ┌────────────────┐   ┌──────────────────────┐   ┌──────────────────────────┐ │  ║
-║  │  │  Plan Builder  │   │  Backend Selector     │   │  Executor                │ │  ║
-║  │  │  DAG of nodes  │   │  auto / pandas /      │   │  topological order       │ │  ║
-║  │  │  dep graph     │   │  spark / dbt          │   │  parallel where possible │ │  ║
-║  │  └────────────────┘   └──────────────────────┘   └──────────────────────────┘ │  ║
-║  └───────────────────┬──────────────────────────────────┬─────────────────────────┘  ║
-║                      │                                  │                            ║
-║  ┌───────────────────▼────────────────┐  ┌─────────────▼──────────────────────────┐ ║
-║  │  CONNECTOR REGISTRY                │  │  TRANSFORMATION REGISTRY               │ ║
-║  │                                    │  │                                        │ ║
-║  │  sqlserver    postgres             │  │  filter        lookup                  │ ║
-║  │  oracle       azure_sql_mi         │  │  expression    joiner                  │ ║
-║  │  s3           gcs / adls           │  │  aggregator    router                  │ ║
-║  │  mainframe    kafka                │  │  scd_type_2    update_strategy         │ ║
-║  │  rabbitmq     http_api             │  │  sequence      sorter                  │ ║
-║  │  csv_file     parquet              │  │  union         mask_pii                │ ║
-║  │  sqlite (dev) snowflake            │  │  deduplicate   validate                │ ║
-║  │                                    │  │                                        │ ║
-║  │  [Plugin: entry-points registry]   │  │  [Plugin: entry-points registry]       │ ║
-║  └────────────────────────────────────┘  └────────────────────────────────────────┘ ║
-║                                                                                      ║
-║  ┌──────────────────────────────────────────────────────────────────────────────────┐║
-║  │  CROSS-CUTTING SERVICES                                                          │║
-║  │                                                                                  │║
-║  │  Structured Logging (JSON)  │  Prometheus Metrics  │  OpenTelemetry Traces       │║
-║  │  OpenLineage Emission       │  Secrets Resolver    │  Watermark Manager          │║
-║  │  Validation Engine          │  Circuit Breaker     │  SIEM Audit Logger          │║
-║  │  Dead-letter Queue Writer   │  Retry w/ Backoff    │  PII Detection + Masking    │║
-║  └──────────────────────────────────────────────────────────────────────────────────┘║
-╚══════════════════════════════════════════════════════════════════════════════════════╝
-```
+    subgraph PLATFORM["Generic ETL Platform"]
+        direction TB
+        subgraph AGENT_BOX["Migration Agent (build-time)"]
+            PARSER["Parsers\nInformatica · ADF"]
+            IR["Intermediate\nRepresentation"]
+            GEN["Generators\nYAML · DAG · Tests"]
+            PARSER --> IR --> GEN
+        end
 
-### L2b — Migration Agent
+        subgraph FW_BOX["ETL Framework (runtime)"]
+            CLI["etl-runner CLI"]
+            ENGINE["Execution Engine\npandas · Spark · dbt"]
+            CONN["Connector Registry\n10+ connectors"]
+            XFORM["Transform Registry\n15+ transforms"]
+            CLI --> ENGINE
+            ENGINE --> CONN
+            ENGINE --> XFORM
+        end
 
-```
-╔══════════════════════════════════════════════════════════════════════════════════════╗
-║                               MIGRATION AGENT                                        ║
-║                         Build-time tool — not a runtime dependency                   ║
-╠══════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                      ║
-║  SOURCE PLUGINS (pluggable per legacy ETL technology)                                ║
-║  ┌───────────────────────────────────┐  ┌────────────────────────────────────────┐  ║
-║  │  INFORMATICA SOURCE PLUGIN        │  │  ADF SOURCE PLUGIN                     │  ║
-║  │  ┌─────────────┐ ┌─────────────┐  │  │  ┌──────────────┐ ┌─────────────────┐  │  ║
-║  │  │  Ingestion  │ │  Parser     │  │  │  │  Ingestion   │ │  Parser         │  │  ║
-║  │  │  pmrep CLI  │ │  XML → IR   │  │  │  │  ADF Git API │ │  JSON → IR      │  │  ║
-║  │  └─────────────┘ └──────┬──────┘  │  │  └──────────────┘ └────────┬────────┘  │  ║
-║  │  ┌─────────────────────┐│         │  │  ┌─────────────────────────┐│          │  ║
-║  │  │  Expression Lexer   ││         │  │  │  Expression Lexer       ││          │  ║
-║  │  │  (Informatica DSL)  ││         │  │  │  (ADF Expression DSL)   ││          │  ║
-║  │  └─────────────────────┘│         │  │  └─────────────────────────┘│          │  ║
-║  └───────────────────────  ┼  ───────┘  └──────────────────────────── ┼ ─────────┘  ║
-║                            │                                          │              ║
-║                            └──────────────┬───────────────────────────┘              ║
-║                                           │                                          ║
-║  SHARED CORE (source-agnostic)            ▼                                          ║
-║  ┌────────────────────────────────────────────────────────────────────────────────┐  ║
-║  │                  INTERMEDIATE REPRESENTATION (IR)                              │  ║
-║  │              Canonical JSON — vendor-neutral semantic model                    │  ║
-║  │  sources[] / transformations[] / targets[] / parameters[] / dependencies[]    │  ║
-║  └─────────────────────────────────┬──────────────────────────────────────────────┘  ║
-║                                    │                                                  ║
-║              ┌─────────────────────▼──────────────────────┐                          ║
-║              │              ANALYZER AGENT                 │  AI-assisted             ║
-║              │  complexity scoring / pattern classification│  (Claude API)            ║
-║              │  risk flags / effort estimate / routing     │                          ║
-║              └─────────────────────┬──────────────────────┘                          ║
-║                                    │                                                  ║
-║              ┌─────────────────────▼──────────────────────┐                          ║
-║              │             TRANSLATOR AGENT                │  Hybrid                  ║
-║              │  Lexer → AST → Rule Matcher → LLM fallback │  (deterministic +        ║
-║              │  RAG vector store for few-shot examples     │   Claude API)            ║
-║              └─────────────────────┬──────────────────────┘                          ║
-║                                    │                                                  ║
-║              ┌─────────────────────▼──────────────────────┐                          ║
-║              │             GENERATOR AGENT                 │  Deterministic           ║
-║              │  IR → YAML config                          │                          ║
-║              │  IR → Airflow DAG (Python)                  │                          ║
-║              │  IR → dbt models (SQL)                      │                          ║
-║              │  IR → unit tests + validation fixtures      │                          ║
-║              │  IR → business logic markdown (SME docs)    │                          ║
-║              └─────────────────────┬──────────────────────┘                          ║
-║                                    │                                                  ║
-║              ┌─────────────────────▼──────────────────────┐                          ║
-║              │             VALIDATOR AGENT                 │  Mostly deterministic    ║
-║              │  Tier 1: syntactic (YAML parses, DAG builds)│                          ║
-║              │  Tier 2: schema (refs resolve, types match) │                          ║
-║              │  Tier 3: unit tests on sample data          │                          ║
-║              │  Tier 4: sample-run against real sources    │                          ║
-║              │  Tier 5: shadow-run + full reconciliation   │                          ║
-║              └─────────────────────┬──────────────────────┘                          ║
-║                                    │                                                  ║
-║              ┌─────────────────────▼──────────────────────┐                          ║
-║              │             REVIEWER AGENT                  │  AI-assisted             ║
-║              │  PR generation (GitHub)                     │  (Claude API)            ║
-║              │  Business logic summary (plain language)    │                          ║
-║              │  Confidence score + reviewer questions      │                          ║
-║              └─────────────────────┬──────────────────────┘                          ║
-║                                    │                                                  ║
-║  ┌─────────────────────────────────▼──────────────────────────────────────────────┐  ║
-║  │                       HUMAN REVIEW GATES (5 gates)                             │  ║
-║  │  Gate 1: Analysis sample review  │  Gate 4: Reconciliation sign-off            │  ║
-║  │  Gate 2: Engineering review      │  Gate 5: Production cutover approval        │  ║
-║  │  Gate 3: SME business validation │                                             │  ║
-║  └────────────────────────────────────────────────────────────────────────────────┘  ║
-║                                                                                      ║
-║  ┌────────────────────────────────────────────────────────────────────────────────┐  ║
-║  │  ORCHESTRATOR — LangGraph state machine + PostgreSQL audit DB                  │  ║
-║  │  States: INGESTED → PARSED → ANALYZED → TRANSLATED → GENERATED →              │  ║
-║  │          VALIDATED → REVIEWED → PR_OPEN → PR_APPROVED →                       │  ║
-║  │          SHADOW_RUN → CUTOVER_APPROVED → PRODUCTION → LEGACY_RETIRED          │  ║
-║  └────────────────────────────────────────────────────────────────────────────────┘  ║
-╚══════════════════════════════════════════════════════════════════════════════════════╝
+        GEN -- "YAML configs" --> CLI
+    end
+
+    subgraph ORCHESTRATION["Orchestration"]
+        AIRFLOW["Apache Airflow\nMWAA on AWS"]
+    end
+
+    subgraph OBS["Observability"]
+        PROM["Prometheus\n+ Grafana"]
+        OTL["OpenTelemetry\nTracing"]
+        OL["OpenLineage\nMarquez"]
+        CW["CloudWatch\nSIEM"]
+    end
+
+    subgraph SEC["Security"]
+        SM["Secrets Manager\n/ Vault"]
+        ECR["ECR\nsigned images"]
+        IAM["IRSA\nWorkload Identity"]
+    end
+
+    subgraph TARGETS["Data Targets"]
+        direction LR
+        PG2["PostgreSQL\nDW"]
+        SNFL["Snowflake"]
+        S3T["S3 / Data Lake"]
+        AZT["Azure SQL MI"]
+    end
+
+    SOURCES --> FW_BOX
+    AIRFLOW -- "KubernetesPodOperator" --> FW_BOX
+    FW_BOX --> TARGETS
+    FW_BOX --> OBS
+    SEC --> FW_BOX
+
+    style PLATFORM fill:#0d1b2a,stroke:#2e86c1,color:#fff
+    style AGENT_BOX fill:#1a2a1a,stroke:#27ae60,color:#ddd
+    style FW_BOX fill:#1a1a2a,stroke:#8e44ad,color:#ddd
+    style ORCHESTRATION fill:#2a1a0a,stroke:#e67e22,color:#ddd
+    style OBS fill:#1a2a2a,stroke:#1abc9c,color:#ddd
+    style SEC fill:#2a1a1a,stroke:#e74c3c,color:#ddd
 ```
 
 ---
 
-## L3 — Deployment Architecture Diagram (AWS — Current State)
+## L2a — Generic ETL Framework (Component Architecture)
 
-```
-╔══════════════════════════════════════════════════════════════════════════════════════╗
-║  AWS ACCOUNT — Generic ETL Platform                                 Region: us-east-1    ║
-╠═══════════════════════════════════════╦══════════════════════════════════════════════╣
-║  DEVELOPER PLANE                      ║  DATA PLANE                                 ║
-║                                       ║                                             ║
-║  Developer Workstation                ║  ┌──────────────────────────────────────┐   ║
-║  ┌─────────────────────┐              ║  │  VPC — private subnets only          │   ║
-║  │  IDE → Git commit   │              ║  │                                      │   ║
-║  └──────────┬──────────┘              ║  │  ┌─────────────────────────────────┐ │   ║
-║             │                        ║  │  │  MWAA — Amazon Managed Airflow  │ │   ║
-║             ▼                        ║  │  │  Scheduler + Workers             │ │   ║
-║  ┌─────────────────────┐              ║  │  │  DAGs from S3 (git-synced)       │ │   ║
-║  │  GitHub             │              ║  │  └───────────────┬─────────────────┘ │   ║
-║  │  Repository         │              ║  │                  │ KubernetesPodOp    │   ║
-║  └──────────┬──────────┘              ║  │                  ▼                   │   ║
-║             │                        ║  │  ┌─────────────────────────────────┐ │   ║
-║             ▼                        ║  │  │  EKS Cluster                    │ │   ║
-║  ┌─────────────────────┐              ║  │  │                                 │ │   ║
-║  │  GitHub Actions     │              ║  │  │  Job Pods (etl-runner:v1.x)          │ │   ║
-║  │  CI/CD Pipeline     │              ║  │  │  ┌────┐ ┌────┐ ┌────┐ ┌────┐   │ │   ║
-║  │  ┌───────────────┐  │              ║  │  │  │pod │ │pod │ │pod │ │pod │   │ │   ║
-║  │  │ lint / test   │  │              ║  │  │  └────┘ └────┘ └────┘ └────┘   │ │   ║
-║  │  │ build image   │──┼──push──────►║  │  │  (m5.2xlarge spot fleet)        │ │   ║
-║  │  │ sign image    │  │              ║  │  │                                 │ │   ║
-║  │  │ push to ECR   │  │              ║  │  │  Spark Pods (r5.4xlarge spot)   │ │   ║
-║  │  └───────────────┘  │              ║  │  │  ┌────────────────────────────┐ │ │   ║
-║  └─────────────────────┘              ║  │  │  │ driver  │ executor ×N      │ │ │   ║
-║                                       ║  │  │  └────────────────────────────┘ │ │   ║
-║  CONTROL PLANE                        ║  │  └─────────────────────────────────┘ │   ║
-║                                       ║  │                                      │   ║
-║  ┌─────────────────────┐              ║  │  ┌─────────────────────────────────┐ │   ║
-║  │  ECR                │              ║  │  │  Supporting Services             │ │   ║
-║  │  Container Registry │              ║  │  │                                 │ │   ║
-║  │  signed images only │              ║  │  │  S3 Buckets:                    │ │   ║
-║  └─────────────────────┘              ║  │  │  • /configs (YAML jobs)         │ │   ║
-║                                       ║  │  │  • /dags (Airflow DAGs)         │ │   ║
-║  ┌─────────────────────┐              ║  │  │  • /logs (task logs)            │ │   ║
-║  │  S3 Config Bucket   │              ║  │  │  • /lineage (OpenLineage events)│ │   ║
-║  │  YAML job configs   │              ║  │  │  • /staging (temp data)         │ │   ║
-║  └─────────────────────┘              ║  │  │                                 │ │   ║
-║                                       ║  │  │  RDS PostgreSQL Multi-AZ:       │ │   ║
-║  ┌─────────────────────┐              ║  │  │  • Airflow metadata DB          │ │   ║
-║  │  Secrets Manager    │              ║  │  │  • Watermark registry           │ │   ║
-║  │  Connection creds   │              ║  │  │  • Agent audit DB               │ │   ║
-║  │  API keys           │◄─────────────╬──│  │                                 │ │   ║
-║  └─────────────────────┘              ║  │  │  Secrets Manager (resolved)     │ │   ║
-║                                       ║  │  └─────────────────────────────────┘ │   ║
-║  OBSERVABILITY PLANE                  ║  └──────────────────────────────────────┘   ║
-║                                       ║                                             ║
-║  ┌─────────────────────┐              ║  ┌──────────────────────────────────────┐   ║
-║  │  CloudWatch         │◄─────────────╬──│  DATA SOURCES & TARGETS              │   ║
-║  │  Logs + Metrics     │              ║  │  (connected via VPC / PrivateLink)   │   ║
-║  └─────────────────────┘              ║  │                                      │   ║
-║  ┌─────────────────────┐              ║  │  SQL Server  Oracle  Postgres        │   ║
-║  │  Prometheus +       │◄─────────────╬──│  Azure SQL MI  Mainframe SFTP        │   ║
-║  │  Grafana            │              ║  │  S3  RabbitMQ  Kafka (MSK)           │   ║
-║  └─────────────────────┘              ║  └──────────────────────────────────────┘   ║
-║  ┌─────────────────────┐              ║                                             ║
-║  │  Marquez            │◄─────────────╬──  OpenLineage events from job pods         ║
-║  │  (Data Lineage)     │              ║                                             ║
-║  └─────────────────────┘              ║                                             ║
-╚═══════════════════════════════════════╩═════════════════════════════════════════════╝
-```
+```mermaid
+flowchart TB
+    CLI["🖥️ CLI — etl-runner\n--config path --dry-run --validate --tier"]
 
----
+    subgraph CONFIG["Config Layer"]
+        direction LR
+        LOADER["Config Loader\ns3:// · gs:// · file://"]
+        SCHEMA["JSON Schema\nValidator v1, v2..."]
+        RESOLVER["Parameter Resolver\nwatermarks · secrets · vars"]
+        POLICY["Policy Enforcer\ntier rules · PII · governance"]
+        LOADER --> SCHEMA --> RESOLVER --> POLICY
+    end
 
-## L3b — Multi-Cloud Portability Architecture
+    subgraph ENGINE["Execution Engine"]
+        direction LR
+        PLAN["Plan Builder\nDAG of nodes"]
+        BACKEND["Backend Selector\nauto · pandas · spark · dbt"]
+        EXEC["Executor\ntopological order"]
+        PLAN --> BACKEND --> EXEC
+    end
 
-```
-┌──────────────────────────────────────────────────────────────────────────────────────┐
-│                         CLOUD-AGNOSTIC PORTABILITY MODEL                             │
-├──────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                      │
-│  100% PORTABLE (zero changes across clouds)                                          │
-│  ████████████████████████████████████████████████████████████████████████████████   │
-│                                                                                      │
-│  ┌───────────────────────────────────────────────────────────────────────────────┐  │
-│  │  YAML Job Configs  (jobs/*.yaml)  — pure data, no cloud references            │  │
-│  └───────────────────────────────────────────────────────────────────────────────┘  │
-│  ┌───────────────────────────────────────────────────────────────────────────────┐  │
-│  │  Container Image  (etl-runner:v1.x.x)  — same image pushed to any registry        │  │
-│  └───────────────────────────────────────────────────────────────────────────────┘  │
-│  ┌───────────────────────────────────────────────────────────────────────────────┐  │
-│  │  Framework Python Code  — zero cloud SDK references in framework/             │  │
-│  └───────────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                      │
-│  90% PORTABLE (minor config change per cloud)                                        │
-│  ██████████████████████████████████████████████████████████████████░░░░░░░░░░░░░░   │
-│                                                                                      │
-│  ┌───────────────────────────────────────────────────────────────────────────────┐  │
-│  │  Airflow DAG Files  — change: registry URL + service account annotation only  │  │
-│  └───────────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                      │
-│  CLOUD-SPECIFIC THIN LAYER (swap per environment)                                    │
-│  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │
-│                                                                                      │
-│  AWS (Today)              GCP (Future)              On-Prem K8s (Option)            │
-│  ─────────────────         ──────────────────        ─────────────────────          │
-│  MWAA            ──►       Cloud Composer   ──►       Self-managed Airflow           │
-│  EKS             ──►       GKE              ──►       OpenShift / vanilla K8s        │
-│  ECR             ──►       Artifact Registry──►       Harbor registry                │
-│  S3 (configs)    ──►       GCS              ──►       MinIO / NFS                    │
-│  Secrets Manager ──►       Secret Manager   ──►       HashiCorp Vault                │
-│  IAM + IRSA      ──►       Workload Identity──►       SPIFFE / cert-manager          │
-│  CloudWatch      ──►       Cloud Monitoring ──►       Prometheus + Loki              │
-│                                                                                      │
-│  Cloud migration effort (when triggered):                                            │
-│  YAML configs:   0 hours     │  Cloud infrastructure:  4–6 weeks to set up          │
-│  Container image: 8 hours    │  Testing + cutover:     4–8 weeks                    │
-│  DAG files:      40–80 hours │  TOTAL ESTIMATE:        3–4 months (not years)        │
-└──────────────────────────────────────────────────────────────────────────────────────┘
+    subgraph CONNECTORS["Connector Registry  [plugin: entry-points]"]
+        direction LR
+        C1["sqlserver"]
+        C2["postgres"]
+        C3["oracle"]
+        C4["s3"]
+        C5["azure_sql_mi"]
+        C6["mainframe_sftp"]
+        C7["kafka"]
+        C8["csv_file · parquet"]
+    end
+
+    subgraph TRANSFORMS["Transformation Registry  [plugin: entry-points]"]
+        direction LR
+        T1["filter"]
+        T2["expression"]
+        T3["lookup"]
+        T4["joiner"]
+        T5["aggregator"]
+        T6["scd_type_2"]
+        T7["router · union"]
+        T8["mask_pii · validate"]
+    end
+
+    subgraph CROSSCUT["Cross-Cutting Services"]
+        direction LR
+        LOG["Structured\nLogging"]
+        MET["Prometheus\nMetrics"]
+        TRC["OpenTelemetry\nTracing"]
+        LIN["OpenLineage\nEmitter"]
+        WM["Watermark\nManager"]
+        CB["Circuit\nBreaker"]
+        SIEM["SIEM\nAudit Logger"]
+    end
+
+    CLI --> CONFIG
+    CONFIG --> ENGINE
+    ENGINE --> CONNECTORS
+    ENGINE --> TRANSFORMS
+    ENGINE --> CROSSCUT
+
+    style CONFIG fill:#1a2a3a,stroke:#2e86c1,color:#fff
+    style ENGINE fill:#1a3a2a,stroke:#27ae60,color:#fff
+    style CONNECTORS fill:#2a1a3a,stroke:#8e44ad,color:#fff
+    style TRANSFORMS fill:#3a2a1a,stroke:#e67e22,color:#fff
+    style CROSSCUT fill:#2a2a2a,stroke:#7f8c8d,color:#fff
 ```
 
 ---
 
-## Data Flow Diagram — End-to-End Pipeline Execution
+## L2b — Migration Agent (Pipeline Architecture)
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                       END-TO-END DATA FLOW                                          │
-│                  (Airflow trigger → data at target)                                 │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph SOURCES["Source Artifacts"]
+        IXML["Informatica XML\n(pmrep export)"]
+        AJSON["ADF JSON\n(Azure DevOps Git)"]
+    end
 
- 1. TRIGGER
-    Airflow Scheduler (MWAA)
-    ├── reads DAG file from S3 (git-synced)
-    └── fires KubernetesPodOperator task
+    subgraph PLUGINS["Source Plugins  [pluggable per ETL tool]"]
+        direction LR
+        subgraph INFPLUGIN["Informatica Plugin"]
+            ING1["Ingestion\nDependency Graph"]
+            PAR1["Parser\nXML → IR"]
+            LEX1["Expression Lexer\nInformatica DSL"]
+        end
+        subgraph ADFPLUGIN["ADF Plugin"]
+            ING2["Ingestion\nDependency Graph"]
+            PAR2["Parser\nJSON → IR"]
+            LEX2["Expression Lexer\nADF Expression DSL"]
+        end
+    end
 
- 2. POD LAUNCH
-    EKS control plane
-    ├── pulls etl-runner:{version} from ECR (signed, policy-enforced)
-    ├── injects IRSA service account (read S3, read Secrets Manager)
-    └── starts pod in job-execution namespace
+    subgraph SHARED["Shared Core  [source-agnostic]"]
+        IR["📄 Intermediate Representation\nCanonical JSON — vendor-neutral"]
 
- 3. CONFIG RESOLUTION
-    etl-runner --config s3://etl-configs/jobs/load_dim_customer.yaml
-    ├── Config Loader: downloads YAML from S3
-    ├── JSON Schema Validator: validates against schema v{n}
-    ├── Parameter Resolver:
-    │   ├── watermarks: SELECT last_load FROM etl_watermarks WHERE key = 'dim_customer'
-    │   └── secrets: AWS Secrets Manager → src_sqlserver_prod connection string
-    └── Policy Enforcer: checks tier P1 SLA rules, PII handling requirements
+        subgraph ANALYZER["Analyzer Agent  ⚡ AI-assisted"]
+            SCORE["Complexity Scoring\n1–5"]
+            PATTERN["Pattern Classification\nknown migration patterns"]
+            ROUTE["Routing Decision\nauto · review · manual"]
+        end
 
- 4. PLAN BUILD
-    Execution Engine
-    ├── builds DAG of nodes: [src_customers] → [filter_active] → [lookup_segment]
-    │                                        → [derive_fields] → [apply_scd2] → [tgt_dim_customer]
-    ├── selects backend: auto → pandas (rows < 10M) / spark (rows ≥ 10M)
-    └── validates no cycles, all inputs resolved
+        subgraph TRANSLATOR["Translator Agent  🔀 Hybrid"]
+            RULES["Rule-Based\nDeterministic patterns\n≥80% coverage"]
+            LLM["LLM Fallback\nClaude API + RAG\nfew-shot examples"]
+            CONF["Confidence Score\n0.0 – 1.0"]
+            RULES -- "unmatched" --> LLM
+            LLM --> CONF
+        end
 
- 5. EXECUTION (pandas path shown)
-    ├── src_customers.read()
-    │   └── SQLServerConnector: execute query against src_sqlserver_prod
-    │       WHERE updated_dt >= :last_run_dt
-    │       → DataFrame (N rows × M columns)
-    │
-    ├── filter_active.apply(df)
-    │   └── Filter: df[df['status'] == 'ACTIVE']
-    │       → DataFrame (N' rows)
-    │
-    ├── lookup_segment.apply(df)
-    │   └── Lookup: JOIN with ref_segments on segment_id
-    │       (cache=static: loads full lookup table once at start)
-    │       → DataFrame (N' rows + segment_code, segment_name)
-    │
-    ├── derive_fields.apply(df)
-    │   └── Expression: compute full_name, email_domain, customer_tier, load_ts
-    │       → DataFrame (N' rows + derived columns)
-    │
-    ├── apply_scd2.apply(df)
-    │   └── SCD Type 2:
-    │       ├── expire changed records (set effective_to, current_flg = 'N')
-    │       ├── insert new versions (current_flg = 'Y')
-    │       └── insert truly new records
-    │       → DataFrame (M rows: expires + new inserts)
-    │
-    └── tgt_dim_customer.write(df)
-        └── PostgresConnector: MERGE into dim_customer
-            commit_interval = 10,000 rows
+        subgraph GENERATOR["Generator Agent  ✅ Deterministic"]
+            GYAML["YAML Config\n(Framework runtime)"]
+            GDAG["Airflow DAG\n(Python)"]
+            GDBT["dbt Models\n(SQL)"]
+            GTEST["Unit Tests\n(pytest fixtures)"]
+            GDOC["Business Summary\n(Markdown for SMEs)"]
+        end
 
- 6. POST-EXECUTION
-    ├── Validation Engine: row_count_min, no_nulls(customer_id), unique_current_records
-    ├── Watermark Manager: UPDATE etl_watermarks SET last_load = MAX(load_ts)
-    ├── OpenLineage: emit dataset read/write events to Marquez
-    ├── Prometheus: increment rows_processed, job_duration, job_success counters
-    └── CloudWatch: structured log with run_id, job_name, rows_in, rows_out, duration_ms
+        subgraph VALIDATOR["Validator Agent"]
+            V1["Tier 1: Syntactic\nYAML parses · DAG compiles"]
+            V2["Tier 2: Schema\nrefs resolve · types match"]
+            V3["Tier 3: Unit Tests\nsample data pass"]
+            V4["Tier 4: Sample Run\nrow counts match"]
+            V5["Tier 5: Shadow Run\nfull reconciliation"]
+            V1 --> V2 --> V3 --> V4 --> V5
+        end
 
- 7. POD TERMINATION
-    EKS: pod exits 0 (success) or non-zero (failure → Airflow retry logic)
-    Airflow: marks task success/failure, triggers downstream dependencies
-```
+        subgraph REVIEWER["Reviewer Agent  ⚡ AI-assisted"]
+            PR["GitHub PR\nauto-generated"]
+            BIZ["Plain-language\nbusiness summary"]
+            QS["Reviewer questions\nconfidence score"]
+        end
+    end
 
----
+    subgraph GATES["Human Review Gates  🔐 Cannot be bypassed"]
+        direction LR
+        G1["Gate 1\nAnalysis\ncalibration"]
+        G2["Gate 2\nEngineering\nreview"]
+        G3["Gate 3\nSME business\nvalidation"]
+        G4["Gate 4\nReconciliation\nsign-off"]
+        G5["Gate 5\nProduction\ncutover"]
+    end
 
-## Migration Agent Data Flow Diagram
+    PROD["✅ Production Pipeline\n→ Legacy Retired"]
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                    MIGRATION AGENT — CONVERSION FLOW                                │
-│                     Informatica XML → Production YAML                               │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+    IXML --> INFPLUGIN --> IR
+    AJSON --> ADFPLUGIN --> IR
+    IR --> ANALYZER --> TRANSLATOR --> GENERATOR --> VALIDATOR --> REVIEWER --> GATES --> PROD
 
-INPUT:  m_LOAD_CUSTOMERS.xml (Informatica PowerCenter mapping export)
-OUTPUT: load_dim_customer.yaml + daily_customer_load.py + tests + docs
-
- 1. INGESTION
-    ├── pmrep export or REST API pull
-    ├── build artifact inventory: {id, type, owner, tier, last_modified}
-    └── resolve dependency graph: workflow → sessions → mappings
-
- 2. PARSING  [Deterministic]
-    InformaticaXMLParser
-    ├── parse <SOURCE> elements → IRSource objects
-    ├── traverse CONNECTOR graph (topological walk)
-    ├── parse each <TRANSFORMATION>:
-    │   ├── SQ_CUSTOMERS   → IRSource (source_qualifier)
-    │   ├── FIL_ACTIVE     → IRTransformation(type=filter)
-    │   ├── LKP_SEGMENTS   → IRTransformation(type=lookup)
-    │   ├── EXP_DERIVE     → IRTransformation(type=expression)
-    │   │   ├── FULL_NAME  = CONCAT(FIRST_NAME, ' ', LAST_NAME)
-    │   │   └── CUST_TIER  = IIF(SEG_CODE='PREM','GOLD',IIF(SEG_CODE='STD','SILVER','BRONZE'))
-    │   └── UPD_STRATEGY   → IRTransformation(type=scd_type_2)
-    └── serialize to ir.json (audit artifact)
-
- 3. ANALYSIS  [AI-assisted — Claude API]
-    ├── complexity_score = 3 (medium: 4 transforms, expression logic, SCD2)
-    ├── pattern = "fact_dim_load_with_scd2"
-    ├── risk_flags = ["expression_has_nested_iif", "scd2_natural_key_composite"]
-    └── routing → auto_convert_with_review (not fully_manual)
-
- 4. TRANSLATION  [Hybrid]
-    For expression FULL_NAME = CONCAT(FIRST_NAME, ' ', LAST_NAME):
-    ├── Lexer → AST: CONCAT(a, b, c)
-    ├── Rule matcher: CONCAT(*) → recognized pattern
-    └── Output (confidence 0.99): "first_name || ' ' || last_name"
-
-    For expression CUST_TIER = IIF(SEG_CODE='PREM','GOLD',IIF(...)):
-    ├── Lexer → AST: IIF(cond, true, IIF(cond2, true2, else))
-    ├── Rule matcher: nested IIF → partially recognized
-    ├── LLM fallback (RAG: retrieve 3 similar nested-IIF examples):
-    │   Prompt: "Translate Informatica expression to SQL CASE WHEN..."
-    │   Response: "CASE WHEN segment_code='PREM' THEN 'GOLD' WHEN..."
-    └── Output (confidence 0.87): SQL CASE expression + human review flag
-
- 5. GENERATION  [Deterministic]
-    YAMLGenerator:
-    ├── render jobs/load_dim_customer.yaml from IR + translations
-    ├── validate against schema.json
-    ├── render dags/daily_customer_load.py (Airflow DAG)
-    ├── render tests/load_dim_customer_test.yaml (sample data + expected output)
-    └── render docs/load_dim_customer.md (plain-language business summary)
-
- 6. VALIDATION
-    ├── Tier 1 (Syntactic): YAML parses ✓, DAG imports ✓
-    ├── Tier 2 (Schema): all refs resolve ✓, connection names match ✓
-    ├── Tier 3 (Unit): 12 test cases pass ✓
-    ├── Tier 4 (Sample-run): 1,000-row sample → row count matches ✓
-    └── Overall confidence: 0.91
-
- 7. REVIEW PR
-    PR created on GitHub:
-    ├── Title: "Migrate: m_LOAD_CUSTOMERS → load_dim_customer (Confidence: 0.91)"
-    ├── Business summary for SME: "This job loads the customer dimension daily..."
-    ├── Reviewer question: "Expression CUST_TIER uses nested IIF — confirm CASE translation matches intent"
-    ├── Validation results: ✓✓✓ (syntactic/schema/unit) ⚠ (nested IIF flagged)
-    └── Reviewers: @data-eng-team @customer-domain-sme
-
-OUTPUT FILES:
-  migrations/wave1/load_dim_customer/
-  ├── jobs/load_dim_customer.yaml        ← Framework runtime config
-  ├── dags/daily_customer_load.py        ← Airflow DAG
-  ├── tests/load_dim_customer_test.yaml  ← Validation test suite
-  ├── docs/load_dim_customer.md          ← Business logic summary
-  └── migration_metadata.json           ← Source ref, confidence, IR hash
+    style SHARED fill:#0d1b2a,stroke:#2e86c1,color:#fff
+    style PLUGINS fill:#1a2a1a,stroke:#27ae60,color:#ddd
+    style GATES fill:#3a1a0a,stroke:#e67e22,color:#fff
+    style PROD fill:#0d3b2e,stroke:#27ae60,color:#fff
 ```
 
 ---
 
-## Network & Security Architecture
+## L2c — Migration Job State Machine
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                      NETWORK & SECURITY ARCHITECTURE                                │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> INGESTED
+    INGESTED --> PARSED
+    INGESTED --> PARSE_FAILED : parse error
 
-  PUBLIC INTERNET
-       │
-       │  (no direct internet ingress to data plane)
-       │
-  ┌────▼──────────────────────────────────────────────────────────────────────────┐
-  │  AWS VPC  (10.0.0.0/8)                                                        │
-  │                                                                               │
-  │  ┌────────────────────────────────────────────────────────────────────────┐   │
-  │  │  Private Subnets (no public IP)                                        │   │
-  │  │                                                                        │   │
-  │  │  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────────┐   │   │
-  │  │  │  MWAA Subnet     │  │  EKS Node Subnet │  │  RDS Subnet        │   │   │
-  │  │  │  (scheduler,     │  │  (job pods)      │  │  (Postgres HA)     │   │   │
-  │  │  │   workers)       │  │  NetworkPolicy:  │  │  sg: port 5432     │   │   │
-  │  │  │                  │  │  deny-all default│  │  only from EKS     │   │   │
-  │  │  │  sg: 443 → EKS   │  │  allow: → db     │  │  and MWAA SGs      │   │   │
-  │  │  │  sg: 443 → Secs  │  │  allow: → s3 ep  │  └────────────────────┘   │   │
-  │  │  └──────────────────┘  │  allow: → secs ep│                            │   │
-  │  │                        └──────────────────┘                            │   │
-  │  └────────────────────────────────────────────────────────────────────────┘   │
-  │                                                                               │
-  │  VPC Endpoints (no NAT for AWS services):                                     │
-  │  • S3 Gateway endpoint        • ECR API + DKR endpoints                       │
-  │  • Secrets Manager endpoint   • CloudWatch endpoint                           │
-  │                                                                               │
-  │  Transit Gateway → On-premise data centers                                    │
-  │  PrivateLink → Azure SQL MI (cross-cloud via ExpressRoute)                    │
-  └───────────────────────────────────────────────────────────────────────────────┘
+    PARSED --> ANALYZED
+    ANALYZED --> TRANSLATED : auto convert
+    ANALYZED --> MANUAL_QUEUE : complex / unsupported
+    ANALYZED --> GATE_1 : calibration batch
 
-  IDENTITY & ACCESS
-  ─────────────────
-  Job pods:   IRSA (IAM Role for Service Account)
-              → S3 read (configs, staging)
-              → Secrets Manager read (connections)
-              → CloudWatch write (logs)
-              → S3 write (outputs, lineage)
+    GATE_1 --> TRANSLATED : approved
+    GATE_1 --> MANUAL_QUEUE : rejected
 
-  Image policy: OPA Gatekeeper admission webhook
-              → only ECR images with valid cosign signature run
-              → image tag pinning required (no :latest in production)
+    TRANSLATED --> GENERATED
+    GENERATED --> VALIDATED
+    VALIDATED --> REVIEWED : pass / warn
+    VALIDATED --> MANUAL_QUEUE : fail
 
-  Secrets:    Zero credentials in YAML configs or DAGs
-              All connections reference Secrets Manager path
-              Rotation enforced every 90 days
+    REVIEWED --> GATE_2 : PR open
+    GATE_2 --> SHADOW_RUN : approved
+    GATE_2 --> TRANSLATED : rejected with feedback
+
+    SHADOW_RUN --> GATE_4 : reconciliation pass
+    SHADOW_RUN --> MANUAL_QUEUE : reconciliation fail
+
+    GATE_4 --> GATE_5
+    GATE_5 --> PRODUCTION : approved
+    PRODUCTION --> LEGACY_RETIRED
+    LEGACY_RETIRED --> [*]
+
+    MANUAL_QUEUE --> TRANSLATED : human fixes + retry
+    PARSE_FAILED --> [*] : no conversion possible
 ```
 
 ---
 
-## Pipeline Tier Model
+## L3 — AWS Deployment Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                         PIPELINE TIER CLASSIFICATION                             │
-├──────────┬────────────────────────────────────────────────────────────────────────┤
-│  Tier    │  Definition & Controls                                                 │
-├──────────┼────────────────────────────────────────────────────────────────────────┤
-│  P0      │  Regulatory / compliance pipelines                                     │
-│  (Red)   │  SLA: 99.9% monthly uptime                                             │
-│          │  RTO: 15 minutes   RPO: 0 (exactly-once)                               │
-│          │  Requires: ARB + Security + DG sign-off for any change                 │
-│          │  On-call: 24×7 PagerDuty with 5-min acknowledgement SLA               │
-│          │  Examples: CALEA feeds, regulatory reporting, financial reconciliation  │
-├──────────┼────────────────────────────────────────────────────────────────────────┤
-│  P1      │  Business-critical pipelines                                            │
-│  (Amber) │  SLA: 99.5% monthly uptime                                             │
-│          │  RTO: 30 minutes   RPO: 1 run (at-least-once with reconciliation)      │
-│          │  Requires: Engineering lead sign-off for changes                       │
-│          │  On-call: business hours + escalation path for nights/weekends         │
-│          │  Examples: customer dimension, revenue metrics, network topology         │
-├──────────┼────────────────────────────────────────────────────────────────────────┤
-│  P2      │  Important pipelines                                                    │
-│  (Blue)  │  SLA: 99.0% monthly uptime                                             │
-│          │  RTO: 2 hours   RPO: daily (re-runnable)                               │
-│          │  Standard change management                                             │
-│          │  On-call: business hours only                                          │
-│          │  Examples: marketing aggregations, product inventory, promotion feeds   │
-├──────────┼────────────────────────────────────────────────────────────────────────┤
-│  P3      │  Non-critical / development pipelines                                  │
-│  (Grey)  │  SLA: best-effort                                                      │
-│          │  RTO: next business day   RPO: re-run from source                      │
-│          │  Self-service change management                                         │
-│          │  No on-call                                                             │
-│          │  Examples: reporting snapshots, dev test pipelines, one-off extracts    │
-└──────────┴────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph DEV["Developer Plane"]
+        direction LR
+        IDE["IDE\n+ Git"] --> GH["GitHub\nRepository"]
+        GH --> CI["GitHub Actions\nCI/CD Pipeline"]
+    end
+
+    subgraph CI_STEPS["CI/CD Steps"]
+        direction LR
+        LINT["lint · typecheck\nunit tests · SAST"]
+        BUILD["docker build\ncosign sign"]
+        PUSH["push to ECR\n(signed images only)"]
+        SYNC["sync YAML configs\nto S3"]
+        LINT --> BUILD --> PUSH
+        BUILD --> SYNC
+    end
+
+    subgraph AWS["AWS Account — us-east-1"]
+        subgraph VPC["VPC — Private Subnets Only"]
+            subgraph CTRL["Control Plane"]
+                ECR_R["ECR\nContainer Registry\nsigned images"]
+                S3_C["S3\netl-configs/\nYAML job configs"]
+                SM_R["Secrets Manager\nconnection credentials"]
+            end
+
+            subgraph ORCH["Orchestration"]
+                MWAA["Amazon MWAA\nAirflow Scheduler\n+ Workers\nDAGs from S3"]
+            end
+
+            subgraph DATA["Data Plane — EKS Cluster"]
+                subgraph JOBS["Job Execution Namespace"]
+                    POD1["ETL Pod\nm5.2xlarge\nspot fleet"]
+                    POD2["ETL Pod"]
+                    POD3["ETL Pod"]
+                end
+                subgraph SPARK_NS["Spark Namespace"]
+                    SDRV["Spark Driver\nr5.4xlarge"]
+                    SEXE["Spark Executors ×N\nr5.4xlarge spot"]
+                    SDRV --> SEXE
+                end
+            end
+
+            subgraph DB["Persistence"]
+                RDS["RDS PostgreSQL\nMulti-AZ\nAirflow metadata\nWatermark registry\nAgent audit DB"]
+                S3L["S3\nlogs · lineage\nstaging · audit"]
+            end
+        end
+
+        subgraph OBS_AWS["Observability"]
+            CW["CloudWatch\nLogs + Metrics"]
+            AMP["Amazon Managed\nPrometheus"]
+            GRAF["Grafana\nDashboards"]
+            XRAY["AWS X-Ray\nTracing"]
+            AMP --> GRAF
+        end
+    end
+
+    subgraph DATASYS["Data Sources & Targets"]
+        direction LR
+        SS["SQL Server"]
+        PGD["PostgreSQL"]
+        OD["Oracle"]
+        MFD["Mainframe\nSFTP"]
+        S3D["S3\nData Lake"]
+    end
+
+    CI --> CI_STEPS
+    CI_STEPS --> ECR_R
+    CI_STEPS --> S3_C
+    S3_C --> MWAA
+    MWAA -- "KubernetesPodOperator" --> JOBS
+    ECR_R --> JOBS
+    ECR_R --> SDRV
+    SM_R --> JOBS
+    S3_C --> JOBS
+    JOBS --> RDS
+    JOBS --> S3L
+    JOBS --> CW
+    JOBS --> AMP
+    JOBS --> XRAY
+    JOBS <--> DATASYS
+
+    style AWS fill:#0d1b2a,stroke:#f39c12,color:#fff
+    style VPC fill:#0a1520,stroke:#2e86c1,color:#ddd
+    style DATA fill:#0d2a1a,stroke:#27ae60,color:#ddd
+    style OBS_AWS fill:#1a2a2a,stroke:#1abc9c,color:#ddd
+    style DATASYS fill:#1a1a2a,stroke:#8e44ad,color:#ddd
 ```
 
 ---
 
-*Document prepared for Architecture Review Board.*
-*ASCII diagrams are canonical — to be rendered as proper vector diagrams (Mermaid / draw.io / Lucidchart) before executive presentation.*
+## L3b — Multi-Cloud Portability
+
+```mermaid
+flowchart LR
+    subgraph PORTABLE["100% Portable — Zero Changes"]
+        direction TB
+        YAML["📄 YAML Job Configs\njobs/*.yaml"]
+        IMG["🐳 Container Image\netl-runner:v1.x.x"]
+        CODE["🐍 Framework Python Code\nno cloud SDK references"]
+    end
+
+    subgraph NEARPORT["~90% Portable — Minor Config Change"]
+        DAG["✈️ Airflow DAG Files\nchange: registry URL +\nservice account annotation only"]
+    end
+
+    subgraph THIN["Cloud-Specific Thin Layer"]
+        direction TB
+        subgraph AWS_L["AWS (Today)"]
+            direction TB
+            A1["MWAA"]
+            A2["EKS"]
+            A3["ECR"]
+            A4["S3"]
+            A5["Secrets Manager"]
+            A6["CloudWatch"]
+        end
+        subgraph GCP_L["GCP (Future)"]
+            direction TB
+            G1["Cloud Composer"]
+            G2["GKE"]
+            G3["Artifact Registry"]
+            G4["GCS"]
+            G5["Secret Manager"]
+            G6["Cloud Monitoring"]
+        end
+        subgraph ONP_L["On-Prem K8s (Option)"]
+            direction TB
+            O1["Self-managed\nAirflow"]
+            O2["OpenShift /\nvanilla K8s"]
+            O3["Harbor\nRegistry"]
+            O4["MinIO / NFS"]
+            O5["HashiCorp\nVault"]
+            O6["Prometheus\n+ Loki"]
+        end
+    end
+
+    PORTABLE --> NEARPORT --> THIN
+
+    A1 -.->|"→"| G1
+    A2 -.->|"→"| G2
+    A3 -.->|"→"| G3
+    A4 -.->|"→"| G4
+    A5 -.->|"→"| G5
+    A6 -.->|"→"| G6
+
+    style PORTABLE fill:#0d3b2e,stroke:#27ae60,color:#fff
+    style NEARPORT fill:#2a2a0d,stroke:#f1c40f,color:#fff
+    style THIN fill:#1a1a1a,stroke:#7f8c8d,color:#ddd
+    style AWS_L fill:#1a2a1a,stroke:#f39c12,color:#ddd
+    style GCP_L fill:#1a1a2a,stroke:#4285f4,color:#ddd
+    style ONP_L fill:#2a1a1a,stroke:#e74c3c,color:#ddd
+```
+
+---
+
+## Data Flow — End-to-End Pipeline Execution
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Airflow
+    participant EKS
+    participant Runner as etl-runner
+    participant Secrets as Secrets Manager
+    participant S3Config as S3 (configs)
+    participant S3Data as S3 / Database
+    participant Watermarks as Watermark DB
+    participant Observability
+
+    Airflow->>EKS: KubernetesPodOperator — submit pod
+    EKS->>Runner: pull signed image from ECR, start container
+
+    Runner->>S3Config: load YAML config
+    Runner->>Runner: validate against JSON Schema
+    Runner->>Secrets: resolve connection credentials
+    Runner->>Watermarks: read last_run_dt watermark
+    Runner->>Runner: build execution plan (DAG of nodes)
+    Runner->>Observability: emit job_start event (OpenLineage)
+
+    loop For each Source → Transform → Sink node
+        Runner->>S3Data: connector.read() — parameterised query
+        S3Data-->>Runner: DataFrame (N rows)
+        Runner->>Runner: apply transformations in order
+        Note over Runner: filter → lookup → expression → scd_type_2
+        Runner->>S3Data: connector.write() — load strategy
+    end
+
+    Runner->>Runner: run post-execution validations
+    alt Validations pass
+        Runner->>Watermarks: update watermark (atomic)
+        Runner->>Observability: emit job_success, rows_out, duration
+        Runner->>EKS: exit 0
+        EKS->>Airflow: task SUCCESS
+    else Validations fail
+        Runner->>Observability: emit job_failure, error details
+        Runner->>EKS: exit 1
+        EKS->>Airflow: task FAILED → retry / alert
+    end
+```
+
+---
+
+## Pipeline Tier SLA Model
+
+```mermaid
+quadrantChart
+    title Pipeline Tier Classification
+    x-axis Low Business Impact --> High Business Impact
+    y-axis Low Failure Risk --> High Failure Risk
+    quadrant-1 P0 — Regulatory
+    quadrant-2 P1 — Business Critical
+    quadrant-3 P3 — Dev / Best Effort
+    quadrant-4 P2 — Important
+
+    P0 Regulatory Feeds: [0.9, 0.95]
+    P0 Financial Reconciliation: [0.85, 0.9]
+    P1 Customer Dimension: [0.8, 0.7]
+    P1 Revenue Metrics: [0.75, 0.75]
+    P2 Marketing Aggregations: [0.55, 0.45]
+    P2 Product Inventory: [0.5, 0.4]
+    P3 Reporting Snapshots: [0.2, 0.15]
+    P3 Dev Test Pipelines: [0.1, 0.1]
+```
+
+---
+
+## Technology Stack
+
+```mermaid
+graph LR
+    subgraph OWNED["Enterprise-Owned IP"]
+        direction TB
+        FWR["Generic ETL Framework\nPython 3.11+"]
+        AGNT["Migration Agent\nPython + LangGraph"]
+        YAMLSCH["YAML Job Schema\nVersioned JSON Schema"]
+    end
+
+    subgraph ADOPTED["Adopted Open Source  — Apache 2.0"]
+        direction TB
+        AF["Apache Airflow\nOrchestration"]
+        PD["pandas\nSmall-data backend"]
+        SP["Apache Spark\nLarge-data backend"]
+        DBT["dbt Core\nSQL transforms"]
+        K8["Kubernetes\nContainer platform"]
+        OL["OpenLineage\nData lineage"]
+        PROM["Prometheus + Grafana\nMetrics"]
+        OT["OpenTelemetry\nTracing"]
+        DBZ["Debezium + Kafka\nCDC / streaming"]
+        COB["Cobrix\nMainframe EBCDIC"]
+    end
+
+    subgraph CLOUD["Cloud Services  — thin layer"]
+        direction TB
+        MWAA["MWAA\nManaged Airflow"]
+        EKS2["EKS\nManaged K8s"]
+        ECR2["ECR\nContainer registry"]
+        ASM["Secrets Manager\nCredentials"]
+    end
+
+    subgraph AI["AI Layer"]
+        direction TB
+        CLAUDE["Claude API\nExpression translation\n+ analysis"]
+        PGVEC["pgvector\nRAG vector store"]
+        LG["LangGraph\nState machine"]
+    end
+
+    AGNT --> CLAUDE
+    AGNT --> PGVEC
+    AGNT --> LG
+    FWR --> PD
+    FWR --> SP
+    FWR --> DBT
+    FWR --> AF
+    AF --> MWAA
+    FWR --> K8
+    K8 --> EKS2
+    FWR --> OL
+    FWR --> PROM
+    FWR --> OT
+
+    style OWNED fill:#0d3b2e,stroke:#27ae60,color:#fff
+    style ADOPTED fill:#0d1b2a,stroke:#2e86c1,color:#fff
+    style CLOUD fill:#2a1a0a,stroke:#f39c12,color:#fff
+    style AI fill:#1a0d2a,stroke:#8e44ad,color:#fff
+```
+
+---
+
+*All diagrams are written in Mermaid and render natively in GitHub, GitLab, Notion, and most modern documentation systems. Use the companion `executive-presentation.tsx` for stakeholder presentations.*
