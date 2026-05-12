@@ -25,71 +25,138 @@ A **heterogeneous agent** system assigns each stage to the right tool — determ
 
 ---
 
-## Agent Taxonomy
+## Agent Taxonomy — Heterogeneous Cyclic Workflow
+
+The workflow is not a linear pipeline. Every tier has feedback paths — failed validation loops back to translation, human rejection loops back to generation, and every approved output feeds the long-term memory that makes the next cycle cheaper and faster.
 
 ```mermaid
-flowchart TB
-    subgraph COORD["Orchestrator (LangGraph)"]
-        ORC["Supervisor Agent\nRoutes state · enforces gates\nno LLM — pure state machine"]
+flowchart TD
+    %% ── Entry ──────────────────────────────────────────────────────────
+    ARTIFACT(["🗂️ Vendor Artifact\nInformatica XML · ADF JSON"])
+
+    %% ── Tier 1: Parse ───────────────────────────────────────────────────
+    subgraph PARSE_TIER["① Parse Tier — Deterministic · No LLM"]
+        PA["Parser Agent\nlxml / jsonpath → IR\nSchema-validated"]
+        DA["Dependency Agent\nMapping DAG builder\ngraph-topological order"]
+        PA --> DA
     end
 
-    subgraph PARSE_TIER["Parse Tier — Deterministic"]
-        direction LR
-        PA["Parser Agent\nXML / JSON → IR\nNo LLM · lxml + jsonschema"]
-        DA["Dependency Agent\nBuilds DAG of mappings\nNo LLM · graph algorithms"]
+    %% ── Tier 2: Analysis ────────────────────────────────────────────────
+    subgraph ANALYSIS_TIER["② Analysis Tier — Rule-first · Haiku on edge cases"]
+        CA["Complexity Agent\nHeuristic score 1–5\n+Haiku for embedded SQL"]
+        CLA["Classifier Agent\nEmbedding similarity\npgvector ANN search"]
+        CA --> CLA
     end
 
-    subgraph ANALYSIS_TIER["Analysis Tier — Rule + LLM Hybrid"]
-        direction LR
-        CA["Complexity Agent\nScores 1–5\nHeuristic rules + Claude Haiku"]
-        CLA["Classifier Agent\nPattern matching\nEmbedding similarity + pgvector"]
+    %% ── Tier 3: Translation ─────────────────────────────────────────────
+    subgraph TRANSLATE_TIER["③ Translation Tier — Rule → LLM escalation"]
+        RA["Rules Agent\n200+ deterministic patterns\n≥80% coverage · $0 LLM"]
+        LA["LLM Translator\nClaude Sonnet + RAG\nfew-shot from pgvector"]
+        CS["Confidence Scorer\nper-expression 0.0–1.0"]
+        RA -- "unmatched\nexpression" --> LA
+        LA --> CS
+        RA --> CS
     end
 
-    subgraph TRANSLATE_TIER["Translation Tier — Rule → LLM Escalation"]
-        direction LR
-        RA["Rules Agent\nDeterministic patterns\n≥80% coverage · zero LLM cost"]
-        LA["LLM Translator Agent\nClaude Sonnet + RAG\nOnly invoked on unmatched"]
-        CONF["Confidence Scorer\nPer-expression 0.0–1.0\nRoutes to manual queue if < 0.7"]
-        RA -- "unmatched expression" --> LA
-        LA --> CONF
+    %% ── Tier 4: Generation ──────────────────────────────────────────────
+    subgraph GEN_TIER["④ Generation Tier — Deterministic Templates · Haiku for prose"]
+        YG["YAML Generator\nJinja2 → schema-validated"]
+        DG["DAG Generator\nAirflow Python AST"]
+        TG["Test Generator\npytest fixture builder"]
+        SG["Summary Generator\nClaude Haiku · SME-readable"]
     end
 
-    subgraph GEN_TIER["Generation Tier — Deterministic Templates"]
-        direction LR
-        YG["YAML Generator\nJinja2 templates\nSchema-validated output"]
-        DG["DAG Generator\nAirflow Python AST\nNo free-form LLM"]
-        TG["Test Generator\npytest fixture builder\nAST manipulation"]
-        SG["Summary Generator\nClaude Haiku\nPlain-language for SMEs"]
+    %% ── Tier 5: Validation ──────────────────────────────────────────────
+    subgraph VAL_TIER["⑤ Validation Tier — Code Execution · No LLM"]
+        SV["Syntax Validator\nT1: YAML load · DAG import\nT2: JSON Schema strict"]
+        UV["Unit Test Runner\nT3: pytest 100 sample rows\nT4: etl-runner 1K rows"]
+        RV["Reconciliation Agent\nT5: shadow run · full diff\nP0/P1 only"]
+        SV --> UV --> RV
     end
 
-    subgraph VAL_TIER["Validation Tier — Code Execution"]
-        direction LR
-        SV["Syntax Validator\nYAML parse · DAG compile\nNo LLM"]
-        UV["Unit Test Runner\nsubprocess · pytest\nNo LLM"]
-        RV["Reconciliation Agent\nRow-count diff + sample check\nNo LLM"]
+    %% ── Tier 6: Review ──────────────────────────────────────────────────
+    subgraph REVIEW_TIER["⑥ Review Tier — Claude Sonnet + Human Gate"]
+        PRG["PR Generator\nGitHub PR · confidence table\nSME checklist · reviewer Qs"]
+        HG["🔐 Human Gate\nBlocking approval\ncannot be bypassed"]
+        PRG --> HG
     end
 
-    subgraph REVIEW_TIER["Review Tier — LLM + Human Gate"]
-        direction LR
-        PRG["PR Generator\nGitHub API + Claude Sonnet\nAuto-drafts description"]
-        HG["Human Gate\nBlocking approval\nCannot be bypassed by any agent"]
+    %% ── Long-Term Memory ────────────────────────────────────────────────
+    subgraph MEMORY["♾️ Long-Term Memory — grows with every approved migration"]
+        VEC[("pgvector\nTranslation examples\nEmbedded IR fingerprints")]
+        RULES[("Rules YAML\nHand-curated\n+ auto-promoted patterns")]
+        AUDIT[("Audit Log\nEvery decision\n+ human action")]
     end
 
-    ORC --> PARSE_TIER
+    %% ── Happy path (forward flow) ───────────────────────────────────────
+    ARTIFACT --> PARSE_TIER
     PARSE_TIER --> ANALYSIS_TIER
     ANALYSIS_TIER --> TRANSLATE_TIER
     TRANSLATE_TIER --> GEN_TIER
     GEN_TIER --> VAL_TIER
     VAL_TIER --> REVIEW_TIER
+    REVIEW_TIER --> PROD(["✅ Production\nLegacy retired"])
 
-    style COORD fill:#1a1a2a,stroke:#8e44ad,color:#fff
-    style PARSE_TIER fill:#0d2a1a,stroke:#27ae60,color:#fff
+    %% ── Feedback cycle 1: Low confidence → Manual Queue ────────────────
+    CS -- "confidence < 0.7\nany expression" --> MQ["🟡 Manual Queue\nhuman edits IR\n2-day SLA"]
+    MQ -- "corrected IR\n+ retry signal" --> TRANSLATE_TIER
+
+    %% ── Feedback cycle 2: Validation fail → Regenerate ─────────────────
+    SV -- "T1/T2 fail\n+ error context" --> GEN_TIER
+    UV -- "T3/T4 fail\n+ diff report" --> TRANSLATE_TIER
+
+    %% ── Feedback cycle 3: Human rejects PR → Revise ─────────────────────
+    HG -- "rejected\n+ review comments" --> TRANSLATE_TIER
+
+    %% ── Feedback cycle 4: Shadow run fail → Manual ──────────────────────
+    RV -- "T5 reconciliation fail\nrow delta > 0.01%" --> MQ
+
+    %% ── Learning cycle: Approved output → Memory ─────────────────────────
+    PROD -- "approved translation\nconfidence ≥ 0.9" --> VEC
+    PROD -- "pattern seen 5×\nauto-promote proposal" --> RULES
+    HG -- "every decision\n+ confidence + actor" --> AUDIT
+
+    %% ── Memory feeds back into Analysis + Translation ────────────────────
+    VEC -- "RAG retrieval\nfew-shot examples" --> LA
+    VEC -- "ANN similarity\npattern match" --> CLA
+    RULES -- "updated rule set\nnext batch" --> RA
+
+    %% ── Parse hard fail → no retry ──────────────────────────────────────
+    PA -- "parse error\nno retry" --> FAIL(["🔴 Parse Failed\nescalate to\nmanual migration"])
+
+    %% ── Styles ───────────────────────────────────────────────────────────
+    style PARSE_TIER    fill:#0d2a1a,stroke:#27ae60,color:#fff
     style ANALYSIS_TIER fill:#1a2a3a,stroke:#2e86c1,color:#fff
     style TRANSLATE_TIER fill:#2a1a3a,stroke:#9b59b6,color:#fff
-    style GEN_TIER fill:#0d1b2a,stroke:#3498db,color:#fff
-    style VAL_TIER fill:#2a1a0a,stroke:#e67e22,color:#fff
-    style REVIEW_TIER fill:#3a1a1a,stroke:#e74c3c,color:#fff
+    style GEN_TIER      fill:#0d1b2a,stroke:#3498db,color:#fff
+    style VAL_TIER      fill:#2a1a0a,stroke:#e67e22,color:#fff
+    style REVIEW_TIER   fill:#3a1a1a,stroke:#e74c3c,color:#fff
+    style MEMORY        fill:#1a1a0d,stroke:#f1c40f,color:#fff
+    style MQ            fill:#2a1a0a,stroke:#f39c12,color:#fff
+    style PROD          fill:#0d3b2e,stroke:#27ae60,color:#fff
+    style FAIL          fill:#3b0d0d,stroke:#e74c3c,color:#fff
 ```
+
+### Reading the Diagram
+
+| Arrow type | Meaning |
+|---|---|
+| Solid downward | Happy-path forward flow |
+| `→ Manual Queue` | Low confidence or reconciliation failure — human corrects IR and retries |
+| `→ Translation Tier` (from Validation) | Test failure feeds error context back for re-translation |
+| `→ Translation Tier` (from Human Gate) | Reviewer rejection with comments triggers a targeted retranslation |
+| `→ pgvector / Rules` | Every approved migration strengthens future runs — the learning cycle |
+| `pgvector / Rules →` agents | Memory feeds Classification and Translation on every run |
+
+### Why Cycles Matter
+
+A purely linear pipeline fails at scale. The cycles are what make the system self-correcting:
+
+- **Validation → Translation feedback loop**: when pytest catches a wrong expression, the error diff is injected into the LLM Translator's next prompt as negative context — "previous attempt produced X, which failed because Y." The model corrects without human involvement.
+- **Human rejection → Translation feedback loop**: a reviewer's PR comment ("this SCD logic doesn't handle NULL surrogate keys") is parsed and appended to the IR as a structured correction hint before the retranslation pass.
+- **Learning cycle**: the more pipelines migrate, the denser the pgvector store becomes. After 200 migrations, the Classifier finds near-exact matches for 70%+ of new mappings — the LLM Translator is barely invoked. After 500 migrations, the Rules Agent receives auto-promoted patterns covering 93%+ of expressions.
+
+The system does not plateau — each wave makes the next wave faster and cheaper.
 
 ---
 
