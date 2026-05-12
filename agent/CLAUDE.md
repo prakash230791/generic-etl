@@ -7,6 +7,109 @@ and all tests pass. This CLAUDE.md guides the **production agent** implementatio
 a LangGraph-based heterogeneous multi-agent system with 8 specialist agents, pgvector RAG,
 PostgreSQL checkpointing, and 5 human-in-the-loop gates.
 
+**Canonical naming:** The IR and YAML always use generic canonical names (e.g. `row_filter`,
+`column_derive`). Vendor names (e.g. Informatica `"Filter"`, ADF `"DerivedColumn"`) exist only
+in parser mapping tables. Full taxonomy: `docs/brainstorming/canonical-taxonomy.md`.
+
+---
+
+## Vendor → Canonical Mapping Tables (Parser's Responsibility Only)
+
+These dicts live in the parser files. **No other file references vendor names.**
+
+### Informatica (`agent/agents/parser/informatica.py`)
+
+```python
+INFORMATICA_TRANSFORM_MAP: dict[str, str | None] = {
+    "Filter":              "row_filter",
+    "Expression":          "column_derive",
+    "Lookup Procedure":    "lookup_enrich",
+    "Lookup":              "lookup_enrich",
+    "Joiner":             "stream_join",
+    "Aggregator":          "aggregate",
+    "Sorter":             "row_sort",
+    "Union":              "union_all",
+    "Router":             "route_split",
+    "Sequence Generator": "sequence_generate",
+    "Rank":               "rank",
+    "Normalizer":         "unpivot",
+    "Update Strategy":    "scd_type_1",     # scd_type_2 if UPDATEOVERRIDE='SCD2'
+    "Stored Procedure":   None,             # → manual queue
+    "Java Transformation": None,            # → manual queue
+    "HTTP Transformation": None,            # → manual queue
+}
+
+INFORMATICA_CONNECTOR_MAP: dict[str, str | None] = {
+    "SQLSERVER":  "sqlserver",
+    "MSSQL":      "sqlserver",
+    "ORACLE":     "oracle",
+    "POSTGRESQL": "postgres",
+    "MYSQL":      "mysql",
+    "ODBC":       "sqlserver",   # estate default; configurable
+    "FLAT FILE":  "csv",
+    "S3":         "s3",
+    "AZURE SQL":  "azure_sql",
+    "SNOWFLAKE":  "snowflake",
+    "MAINFRAME":  "mainframe_sftp",
+    "KAFKA":      "kafka",
+    # Unknown → None → emit warning, mark needs_review=True
+}
+```
+
+### ADF (`agent/agents/parser/adf.py`)
+
+```python
+ADF_ACTIVITY_MAP: dict[str, str | None] = {
+    "Filter":           "row_filter",
+    "DerivedColumn":    "column_derive",
+    "Lookup":           "lookup_enrich",
+    "Join":             "stream_join",
+    "Aggregate":        "aggregate",
+    "Sort":             "row_sort",
+    "Union":            "union_all",
+    "ConditionalSplit": "route_split",
+    "Select":           "column_select",
+    "Pivot":            "pivot",
+    "Unpivot":          "unpivot",
+    "Window":           "window_fn",
+    "Flatten":          "flatten_json",
+    "AlterRow":         "scd_type_1",
+    "Sink":             None,            # → YAML target block
+    "Source":           None,            # → YAML source block
+    "Script":           "python_fn",     # best-effort; flag for review
+    "ExecuteDataFlow":  None,            # nested dataflow → manual
+}
+
+ADF_LINKED_SERVICE_MAP: dict[str, str | None] = {
+    "SqlServer":          "sqlserver",
+    "AzureSqlMI":         "azure_sql",
+    "AzureSqlDatabase":   "azure_sql",
+    "AzurePostgreSql":    "postgres",
+    "AzureMySql":         "mysql",
+    "Oracle":             "oracle",
+    "AmazonS3":           "s3",
+    "AzureBlobStorage":   "adls",
+    "AzureDataLakeStore": "adls",
+    "Snowflake":          "snowflake",
+    "AzureEventHub":      "kafka",
+    "HttpServer":         "http_api",
+    "Sftp":               "sftp",
+    # Unknown → None → emit warning
+}
+```
+
+### What happens when the parser finds an unknown type
+
+```python
+canonical = INFORMATICA_TRANSFORM_MAP.get(vendor_type)
+if canonical is None:
+    ir.warnings.append(f"Unsupported transform type '{vendor_type}' — routed to manual queue")
+    ir.metadata["auto_convertible"] = False
+    ir.metadata["complexity_score"] = 5   # force manual track
+else:
+    transform.type = canonical            # IR always stores canonical name
+```
+
 ---
 
 ## What Exists (POC — Keep and Extend)
