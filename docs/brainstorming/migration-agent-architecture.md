@@ -160,6 +160,113 @@ The system does not plateau — each wave makes the next wave faster and cheaper
 
 ---
 
+## Supervisor → Worker Control Flow
+
+The Supervisor Agent is the sole router. It never does work itself — it reads the typed `AgentState` after each worker completes and decides what runs next. Workers never call each other directly. Every handoff goes through the Supervisor, which is what makes the system observable, resumable, and auditable.
+
+```mermaid
+flowchart LR
+    %% ── Central Supervisor ──────────────────────────────────────────────
+    SUP(["🧠 Supervisor Agent\nReads AgentState\nDecides next worker\nNo LLM — pure routing logic"])
+
+    %% ── Worker Nodes ────────────────────────────────────────────────────
+    W1["① Parser\nXML/JSON → IR"]
+    W2["② Complexity\nScore 1–5"]
+    W3["③ Classifier\npgvector match"]
+    W4["④ Rules Agent\nDeterministic translate"]
+    W5["⑤ LLM Translator\nClaude Sonnet + RAG"]
+    W6["⑥ Generator\nYAML · DAG · Tests · Docs"]
+    W7["⑦ Validator\nT1→T5 execution"]
+    W8["⑧ PR Generator\nClaude Sonnet · GitHub"]
+
+    %% ── Blocking Gates ──────────────────────────────────────────────────
+    G2["🔐 Gate 2\nEngineering review\nHuman approval"]
+    G5["🔐 Gate 5\nProduction cutover\nHuman approval"]
+
+    %% ── Terminal States ─────────────────────────────────────────────────
+    MQ["🟡 Manual Queue\nHuman edits IR"]
+    PROD["✅ Production"]
+
+    %% ── Shared State Bus ────────────────────────────────────────────────
+    STATE[("AgentState\nTypedDict\nimmutable per step\npersisted to PostgreSQL")]
+
+    %% ── Supervisor dispatches to each worker ────────────────────────────
+    SUP -- "dispatch" --> W1
+    SUP -- "dispatch" --> W2
+    SUP -- "dispatch" --> W3
+    SUP -- "dispatch" --> W4
+    SUP -- "dispatch" --> W5
+    SUP -- "dispatch" --> W6
+    SUP -- "dispatch" --> W7
+    SUP -- "dispatch" --> W8
+
+    %% ── Every worker returns updated state to Supervisor ─────────────────
+    W1 -- "ir populated" --> SUP
+    W2 -- "complexity_score set" --> SUP
+    W3 -- "pattern_id + similarity" --> SUP
+    W4 -- "translated / unmatched" --> SUP
+    W5 -- "translated + confidence" --> SUP
+    W6 -- "artifacts generated" --> SUP
+    W7 -- "validation_results[]" --> SUP
+    W8 -- "pr_url created" --> SUP
+
+    %% ── Supervisor routing decisions ─────────────────────────────────────
+    SUP -- "score ≤ 2 → rules-first" --> W4
+    SUP -- "unmatched expression" --> W5
+    SUP -- "confidence < 0.7" --> MQ
+    SUP -- "T1/T2 fail → regenerate" --> W6
+    SUP -- "T3/T4 fail → retranslate" --> W5
+    SUP -- "all tiers pass" --> W8
+    SUP -- "PR ready" --> G2
+    G2 -- "approved" --> W7
+    G2 -- "rejected + comments\n→ inject feedback" --> W5
+    W7 -- "shadow pass" --> G5
+    G5 -- "approved" --> PROD
+    MQ -- "human corrects IR\n→ retry signal" --> SUP
+
+    %% ── State shared between all workers ─────────────────────────────────
+    STATE -. "read before dispatch" .-> SUP
+    SUP -. "checkpoint after each step" .-> STATE
+
+    %% ── Styles ───────────────────────────────────────────────────────────
+    style SUP   fill:#1a1a2a,stroke:#8e44ad,color:#fff
+    style STATE fill:#1a2a1a,stroke:#f1c40f,color:#fff
+    style G2    fill:#3a1a1a,stroke:#e74c3c,color:#fff
+    style G5    fill:#3a1a1a,stroke:#e74c3c,color:#fff
+    style MQ    fill:#2a1a0a,stroke:#f39c12,color:#fff
+    style PROD  fill:#0d3b2e,stroke:#27ae60,color:#fff
+    style W1    fill:#0d2a1a,stroke:#27ae60,color:#ddd
+    style W2    fill:#0d2a1a,stroke:#27ae60,color:#ddd
+    style W3    fill:#1a2a3a,stroke:#2e86c1,color:#ddd
+    style W4    fill:#2a1a3a,stroke:#9b59b6,color:#ddd
+    style W5    fill:#2a1a3a,stroke:#9b59b6,color:#ddd
+    style W6    fill:#0d1b2a,stroke:#3498db,color:#ddd
+    style W7    fill:#2a1a0a,stroke:#e67e22,color:#ddd
+    style W8    fill:#3a1a1a,stroke:#e74c3c,color:#ddd
+```
+
+### Control Flow Rules
+
+| Rule | Detail |
+|---|---|
+| **Supervisor reads state, never skips** | After every worker completes, control unconditionally returns to the Supervisor before any next step |
+| **Workers are stateless** | A worker reads from `AgentState`, does its job, writes result back — no worker holds memory between calls |
+| **State is persisted at every checkpoint** | `AgentState` is written to PostgreSQL after each step — crash anywhere = resume from last checkpoint |
+| **Gates are not workers** | Human gates are `interrupt_before` points in LangGraph — execution halts and resumes only on external signal (PR approval webhook) |
+| **Manual Queue re-enters via Supervisor** | A human editing the IR posts a resume signal; the Supervisor re-reads state and routes back to the appropriate worker |
+| **No worker-to-worker calls** | W4 cannot call W5 directly — it marks expressions `unmatched=true` in state and returns to Supervisor, which then dispatches W5 |
+
+### Why This Pattern?
+
+The hub-and-spoke control topology (Supervisor as the hub) is a deliberate choice over a peer-to-peer mesh:
+
+- **Observability**: every transition is logged at the Supervisor. You always know which worker has the token.
+- **Replaceability**: swap any worker (e.g. replace Claude Sonnet with a fine-tuned model) — Supervisor routing logic is unchanged.
+- **Rate limiting**: the Supervisor enforces concurrency limits per worker type — LLM Translator capped at 10 concurrent calls, Validator capped at 5 shadow runs.
+- **Human gate enforcement**: only the Supervisor can advance past a gate — no worker can route around it.
+
+---
+
 ## Intermediate Representation (IR) — The Common Language
 
 Every agent speaks IR. No agent passes raw Informatica XML or YAML strings to another. This decouples agents completely — you can replace any agent without touching the others.
