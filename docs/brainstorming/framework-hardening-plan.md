@@ -1180,80 +1180,145 @@ Run: pytest tests/test_framework.py -k "sqlserver" -v
 
 ---
 
-#### Session FH-CON-7 — Azure SQL Managed Identity (MSI) Auth
+#### Session FH-CON-7 — Azure SQL: MSI + Service Principal Auth
 
-**Duration:** ~40 min | **Files:** `framework/connectors/azure_sql.py`
+**Duration:** ~55 min | **Files:** `framework/connectors/azure_sql.py`
 **Tests:** `pytest tests/test_framework.py -k "azure_sql" -v`
 **Depends on:** FH-CON-6 (SQLServerConnector — inherits everything)
 **pip:** `azure-identity>=1.15` (add to pyproject.toml)
 
-##### Why a Separate Connector?
+##### Two Auth Modes — One Connector
 
-Azure SQL is SQL Server at the engine level. The only difference is **authentication** —
-no username/password; instead an Azure AD token obtained from the Azure compute's
-Managed Identity (MSI). The `msi://` connection ref prefix signals this to the SecretsResolver.
+| Mode | When to use | Works on laptop? | Credentials in YAML? |
+|---|---|---|---|
+| **Service Principal** | You have client_id + client_secret | ✅ Yes | client_secret via `kv://` or `ls://` |
+| **MSI (Managed Identity)** | Running inside Azure (AKS/VM/Function) | ❌ Azure only | None — identity from compute |
+
+**Use Service Principal for local development and CI/CD. Use MSI for production AKS pods.**
+
+##### YAML Config — Service Principal
 
 ```yaml
-# ADF-generated YAML — msi:// means Managed Identity, no credentials in config
-connector: azure_sql
-connection: msi://vqevdevml    # vqevdevml = credential name / user-assigned MI client id
-                               # blank = system-assigned MI
-database: MyDatabase
-server:   myserver.database.windows.net
+# Service Principal — works from any machine (laptop, CI, AKS)
+sources:
+  - id: src
+    connector: azure_sql
+    auth: service_principal            # signals SP auth path
+    server:        myserver.database.windows.net
+    database:      MyDatabase
+    tenant_id:     ls://AZURE_TENANT_ID       # env var — same for all SP in your tenant
+    client_id:     ls://AZURE_CLIENT_ID       # env var — or kv://vault/secret/sp-client-id
+    client_secret: ls://AZURE_CLIENT_SECRET   # env var — or kv://vault/secret/sp-secret
+    table: dbo.orders
 ```
 
-##### MSI Token Flow
+```yaml
+# MSI — ADF-generated format, works only inside Azure
+sources:
+  - id: src
+    connector: azure_sql
+    connection: msi://vqevdevml   # user-assigned MI client id; blank = system-assigned
+    server:   myserver.database.windows.net
+    database: MyDatabase
+    table: dbo.orders
+```
+
+##### Auth Detection Logic
 
 ```
-K8s pod (IRSA / Workload Identity)
+config["auth"] == "service_principal"  →  ClientSecretCredential(tenant, client_id, secret)
+config["connection"].startswith("msi://")  →  ManagedIdentityCredential(client_id?)
+AZURE_SQL_USE_SQL_AUTH=true env var  →  SQL auth fallback (any mode, overrides all)
+```
+
+##### Token Flow — Service Principal
+
+```
+Local laptop / CI pipeline
     │
-    ▼ azure.identity.ManagedIdentityCredential.get_token("https://database.windows.net/")
-    │   → hits Azure IMDS endpoint: http://169.254.169.254/metadata/identity/...
-    │   → returns JWT token (no username/password involved)
+    ▼ azure.identity.ClientSecretCredential(
+    │     tenant_id    = "your-tenant-id",
+    │     client_id    = "your-app-registration-id",
+    │     client_secret= "your-secret-value"      ← never logged; only held in memory
+    │  ).get_token("https://database.windows.net/")
+    │   → POST https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+    │   → returns JWT access token
     ▼
 pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_bytes})
     │
-    ▼ Azure SQL accepts token, grants access based on MI's AAD object permissions
+    ▼ Azure SQL validates token against Azure AD
+      grants access based on SP's database role (CREATE USER [app-name] FROM EXTERNAL PROVIDER)
 ```
 
-**Local laptop note:** MSI does not work outside Azure. For local testing, set env var
-`AZURE_SQL_USE_SQL_AUTH=true` and provide SQL credentials — the connector auto-detects.
+##### Token Flow — MSI (for reference)
+
+```
+AKS pod (Workload Identity / Pod Identity)
+    │
+    ▼ azure.identity.ManagedIdentityCredential.get_token("https://database.windows.net/")
+    │   → hits IMDS: http://169.254.169.254/metadata/identity/...
+    │   → returns token with no credentials involved
+    ▼
+Same pyodbc.connect with SQL_COPT_SS_ACCESS_TOKEN
+```
+
+##### Azure SQL Database Setup (one-time, per SP / MI)
+
+```sql
+-- Run once in Azure SQL as an AAD admin to grant the SP / MI access:
+-- For Service Principal:
+CREATE USER [your-app-registration-name] FROM EXTERNAL PROVIDER;
+ALTER ROLE db_datareader ADD MEMBER [your-app-registration-name];
+ALTER ROLE db_datawriter ADD MEMBER [your-app-registration-name];
+
+-- For MSI (system-assigned):
+CREATE USER [your-aks-pod-identity-name] FROM EXTERNAL PROVIDER;
+ALTER ROLE db_datareader ADD MEMBER [your-aks-pod-identity-name];
+```
 
 ##### Session Prompt
 
 ```
-Implement framework/connectors/azure_sql.py — extends SQLServerConnector with MSI auth.
+Implement framework/connectors/azure_sql.py — extends SQLServerConnector with both
+Service Principal auth (client_id + client_secret) and MSI auth.
 
 Read FIRST:
   #file:framework/connectors/sqlserver.py
   #file:framework/connectors/base.py
-  #file:docs/brainstorming/framework-hardening-plan.md  (this section — MSI token flow)
+  #file:docs/brainstorming/framework-hardening-plan.md  (this section — both token flows)
 
 Dependencies (add to pyproject.toml):
   azure = ["azure-identity>=1.15"]
 
 Implement framework/connectors/azure_sql.py:
 
-  import struct
+  import os, struct
+  from framework.connectors.base import BaseConnector, ConnectionTestResult
   from framework.connectors.sqlserver import SQLServerConnector
 
   class AzureSQLConnector(SQLServerConnector):
-      """SQL Server connector using Azure AD Managed Identity — no username/password."""
-      connector_type = "azure_sql"
+      """Azure SQL connector — supports Service Principal and Managed Identity auth.
 
-      _SQL_COPT_SS_ACCESS_TOKEN = 1256   # pyodbc attribute constant
+      Auth mode selection (checked in order):
+        1. AZURE_SQL_USE_SQL_AUTH=true env var  → SQL auth fallback (local dev override)
+        2. config["auth"] == "service_principal" → ClientSecretCredential
+        3. config["connection"].startswith("msi://") → ManagedIdentityCredential
+      """
+      connector_type = "azure_sql"
+      _SQL_COPT_SS_ACCESS_TOKEN = 1256
 
       def __init__(self, config: dict) -> None:
-          # Build conn string WITHOUT UID/PWD
           self._server   = config["server"]
           self._database = config["database"]
-          self._mi_client_id = self._parse_mi_client_id(config["connection"])
-          self._use_sql_auth = os.getenv("AZURE_SQL_USE_SQL_AUTH", "false").lower() == "true"
-          if self._use_sql_auth:
-              # Local dev fallback: read SQL creds from env
+          self._auth_mode = self._detect_auth_mode(config)
+          self._use_sql_fallback = os.getenv("AZURE_SQL_USE_SQL_AUTH", "false").lower() == "true"
+
+          if self._use_sql_fallback:
+              # Dev override: use SQL auth (username/password from env)
               config["connection"] = {
                   "server": self._server, "database": self._database,
-                  "user": os.environ["AZURE_SQL_USER"], "password": os.environ["AZURE_SQL_PASSWORD"]
+                  "user": os.environ["AZURE_SQL_USER"],
+                  "password": os.environ["AZURE_SQL_PASSWORD"],
               }
               super().__init__(config)
           else:
@@ -1263,34 +1328,62 @@ Implement framework/connectors/azure_sql.py:
                   f"Server={self._server};Database={self._database};"
                   "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
               )
+              # Store SP credentials (already resolved by SecretsResolver before __init__)
+              if self._auth_mode == "service_principal":
+                  self._tenant_id     = config["tenant_id"]
+                  self._client_id     = config["client_id"]
+                  self._client_secret = config["client_secret"]  # held in memory only
+              elif self._auth_mode == "msi":
+                  conn_ref = config.get("connection", "msi://")
+                  self._mi_client_id = conn_ref[6:] if conn_ref.startswith("msi://") else None
 
-      def _parse_mi_client_id(self, connection_ref: str) -> str | None:
-          """Extract client_id from 'msi://client-id-or-name'. Returns None for system-assigned."""
-          if connection_ref.startswith("msi://"):
-              val = connection_ref[6:]
-              return val if val else None
-          return None
+      def _detect_auth_mode(self, config: dict) -> str:
+          """Determine auth mode from config fields."""
+          if config.get("auth") == "service_principal":
+              return "service_principal"
+          conn = config.get("connection", "")
+          if isinstance(conn, str) and conn.startswith("msi://"):
+              return "msi"
+          raise ValueError(
+              "azure_sql connector requires either auth='service_principal' "
+              "(with tenant_id, client_id, client_secret) or connection='msi://...'"
+          )
 
       def _get_token_bytes(self) -> bytes:
-          """Acquire MSI token and encode for pyodbc SQL_COPT_SS_ACCESS_TOKEN."""
-          from azure.identity import ManagedIdentityCredential
-          kwargs = {"client_id": self._mi_client_id} if self._mi_client_id else {}
-          credential = ManagedIdentityCredential(**kwargs)
+          """Acquire Azure AD token and encode for pyodbc SQL_COPT_SS_ACCESS_TOKEN."""
+          if self._auth_mode == "service_principal":
+              from azure.identity import ClientSecretCredential
+              credential = ClientSecretCredential(
+                  tenant_id=self._tenant_id,
+                  client_id=self._client_id,
+                  client_secret=self._client_secret,
+              )
+          else:  # msi
+              from azure.identity import ManagedIdentityCredential
+              kwargs = {"client_id": self._mi_client_id} if self._mi_client_id else {}
+              credential = ManagedIdentityCredential(**kwargs)
+
           token = credential.get_token("https://database.windows.net/")
           token_bytes = token.token.encode("UTF-16-LE")
           return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
 
       def _connect(self):
-          """Return a pyodbc connection using MSI token (or SQL auth in local mode)."""
           import pyodbc
-          if self._use_sql_auth:
+          if self._use_sql_fallback:
               return pyodbc.connect(self._conn_str)
-          token_bytes = self._get_token_bytes()
-          return pyodbc.connect(self._conn_str,
-                                attrs_before={self._SQL_COPT_SS_ACCESS_TOKEN: token_bytes})
+          return pyodbc.connect(
+              self._conn_str,
+              attrs_before={self._SQL_COPT_SS_ACCESS_TOKEN: self._get_token_bytes()}
+          )
 
-      # Override read/write/execute/test_connection to use _connect() instead of
-      # pyodbc.connect(self._conn_str) directly — all other logic is inherited.
+      def _safe_connection_ref(self) -> str:
+          """Return a log-safe reference — never includes client_secret."""
+          if self._auth_mode == "service_principal":
+              return f"sp://{self._tenant_id}/{self._client_id}@{self._server}/{self._database}"
+          return self.config.get("connection", "msi://")  # msi:// is already safe
+
+      # read / write / execute / execute_procedure — all delegate to _connect()
+      # (same implementations as in the original FH-CON-7 design)
 
       def read(self) -> pd.DataFrame:
           query = self.config.get("query") or f"SELECT * FROM {self.config['table']}"
@@ -1302,13 +1395,10 @@ Implement framework/connectors/azure_sql.py:
           if self.config.get("load_strategy") == "replace":
               with self._connect() as conn:
                   conn.cursor().execute(f"TRUNCATE TABLE {table}")
-          self._fast_executemany_write_via(df, table, self._connect)
-
-      def _fast_executemany_write_via(self, df, table, connect_fn):
           cols = ", ".join(df.columns)
           ph = ", ".join("?" * len(df.columns))
           sql = f"INSERT INTO {table} ({cols}) VALUES ({ph})"
-          with connect_fn() as conn:
+          with self._connect() as conn:
               conn.fast_executemany = True
               conn.cursor().executemany(sql, df.values.tolist())
 
@@ -1327,37 +1417,71 @@ Implement framework/connectors/azure_sql.py:
           try:
               with self._connect() as conn:
                   cursor = conn.cursor()
-                  cursor.execute("SELECT DB_NAME()")
-                  db_name = cursor.fetchone()[0]
+                  cursor.execute("SELECT DB_NAME(), SYSTEM_USER")
+                  db_name, principal = cursor.fetchone()
+                  cursor.execute(
+                      "SELECT TOP 5 TABLE_SCHEMA + '.' + TABLE_NAME "
+                      "FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'"
+                  )
+                  tables = [r[0] for r in cursor.fetchall()]
                   latency = round((time.monotonic() - start) * 1000)
                   return ConnectionTestResult(
                       connector_type="azure_sql",
-                      connection_ref=self.config["connection"],   # msi://... is safe to log
+                      connection_ref=self._safe_connection_ref(),
                       role=self.config.get("_role", "unknown"), ok=True,
                       latency_ms=latency, can_read=True, can_write=True,
-                      schema_info=[db_name])
+                      schema_info=tables,
+                  )
           except Exception as e:
               return ConnectionTestResult(
                   connector_type="azure_sql",
-                  connection_ref=self.config["connection"], ok=False,
-                  role=self.config.get("_role", "unknown"), error=str(e))
+                  connection_ref=self._safe_connection_ref(),
+                  role=self.config.get("_role", "unknown"), ok=False, error=str(e))
 
 Register in pyproject.toml:
   azure_sql = "framework.connectors.azure_sql:AzureSQLConnector"
 
-Tests (mock ManagedIdentityCredential and pyodbc.connect):
-  - test_azure_sql_uses_msi_token_when_not_local
-  - test_azure_sql_falls_back_to_sql_auth_in_local_mode  (AZURE_SQL_USE_SQL_AUTH=true)
-  - test_azure_sql_parses_system_assigned_mi   (connection: msi://)
-  - test_azure_sql_parses_user_assigned_mi     (connection: msi://some-client-id)
-  - test_azure_sql_test_connection_masks_nothing  (msi:// ref is safe to log)
-  - test_azure_sql_read_uses_msi_connection
+Tests (mock azure.identity and pyodbc.connect):
+
+  Service Principal path:
+  - test_sp_auth_calls_client_secret_credential
+  - test_sp_auth_token_bytes_packed_correctly
+  - test_sp_auth_safe_ref_contains_client_id_not_secret
+  - test_sp_auth_reads_dataframe
+  - test_sp_auth_writes_via_fast_executemany
+  - test_sp_auth_test_connection_ok
+
+  MSI path:
+  - test_msi_system_assigned_no_client_id
+  - test_msi_user_assigned_passes_client_id
+  - test_msi_test_connection_safe_ref_is_msi_prefix
+
+  SQL fallback path (AZURE_SQL_USE_SQL_AUTH=true):
+  - test_sql_fallback_uses_plain_pyodbc_no_token
+
+  Security invariants:
+  - test_client_secret_never_appears_in_safe_ref
+  - test_client_secret_never_appears_in_log_output   (capture log, assert secret absent)
+  - test_detect_auth_raises_on_missing_config         (neither auth= nor msi:// present)
 
 Run: pytest tests/test_framework.py -k "azure_sql" -v
 
-LOCAL TESTING NOTE: Set AZURE_SQL_USE_SQL_AUTH=true and provide AZURE_SQL_USER /
-AZURE_SQL_PASSWORD env vars to test against a real Azure SQL instance from your laptop.
-The msi:// auth path requires running inside Azure (AKS pod with MSI enabled).
+LOCAL TESTING (Service Principal — works from your laptop right now):
+  export AZURE_TENANT_ID=your-tenant-id
+  export AZURE_CLIENT_ID=your-app-registration-client-id
+  export AZURE_CLIENT_SECRET=your-secret-value
+
+  In YAML:
+    auth: service_principal
+    tenant_id:     ls://AZURE_TENANT_ID
+    client_id:     ls://AZURE_CLIENT_ID
+    client_secret: ls://AZURE_CLIENT_SECRET
+
+  Then: etl-run test-connection your_job.yaml
+
+MSI TESTING (requires AKS pod with Workload Identity configured):
+  No env vars needed — identity comes from the pod's Azure AD binding.
+  Use connection: msi:// (system) or msi://your-mi-client-id (user-assigned).
 ```
 
 ---
@@ -2135,7 +2259,7 @@ From `control-table-and-framework-v2.md` — implement FW-V2a → FW-V2f first (
 | **FH-CON-4** | scd_type_2.py (complete stub) | SQLite / any connector | 50 min | 🔲 |
 | **FH-CON-5** | connectors/postgres.py | SQL auth; COPY FROM bulk write | 45 min | 🔲 |
 | **FH-CON-6** | connectors/sqlserver.py | SQL auth + Windows auth; BCP + fast_executemany | 50 min | 🔲 |
-| **FH-CON-7** | connectors/azure_sql.py | **MSI / Managed Identity** (msi://); inherits SQL Server | 40 min | 🔲 |
+| **FH-CON-7** | connectors/azure_sql.py | **Service Principal** (client_id + secret) **+ MSI**; inherits SQL Server | 55 min | 🔲 |
 | **FH-CON-8** | connectors/oracle.py | **Oracle thin mode** (no Instant Client); array DML | 45 min | 🔲 |
 
 ### Phase C: Transform Hardening
@@ -2180,7 +2304,8 @@ From `control-table-and-framework-v2.md` — implement FW-V2a → FW-V2f first (
 | CSV File | filesystem | — | — | — | FH-CON-3 |
 | PostgreSQL | SQL (user/pass) | COPY FROM | ✅ | CALL | FH-CON-5 |
 | SQL Server | SQL + Windows (Kerberos) | BCP + fast_executemany | ✅ | EXEC sp | FH-CON-6 |
-| Azure SQL | **MSI / Managed Identity** | fast_executemany | ✅ | EXEC sp | FH-CON-7 |
+| Azure SQL | **Service Principal** (client_id + secret) — works on laptop ✅ | fast_executemany | ✅ | EXEC sp | FH-CON-7 |
+| Azure SQL | **MSI / Managed Identity** (msi://) — Azure pods only | fast_executemany | ✅ | EXEC sp | FH-CON-7 |
 | Oracle | SQL (user/pass, thin mode) | Array DML | ✅ | callproc() | FH-CON-8 |
 
 ---
