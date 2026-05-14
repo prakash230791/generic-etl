@@ -1,14 +1,57 @@
 # Enterprise ETL Platform — Implementation Plan
 
 **Document Type:** Engineering Implementation Guide
-**Version:** 1.0
-**Date:** 2026-05-13
+**Version:** 1.2
+**Date updated:** 2026-05-14
 **Model:** Claude Sonnet 4.6 (`claude-sonnet-4-6`) via GitHub Copilot Chat (GHCP)
 **Companion docs:**
 - `canonical-taxonomy.md` — naming reference
 - `enterprise-hardening-plan.md` — gap analysis, connector specs, expression rules
+- `adf-support-file-parser.md` — ADF ZIP parser design (sessions P2b, P2c)
+- `adf-real-world-fixes.md` — ForEach pattern, credential fixes, child pipeline schedule
+- `adf-parser-yaml-fixes.md` — **NEW** ADF-FIX-1/2, YAML-FIX-1/2/3 session prompts ← start here
+- `control-table-and-framework-v2.md` — Framework v2.0 design (sessions FW-V2a through A-V2)
 - `agent/CLAUDE.md` — agent implementation contracts
 - `framework/CLAUDE.md` — framework implementation contracts
+
+---
+
+## Progress Update — 2026-05-14
+
+### ✅ Completed locally (GHCP sessions)
+
+| Session | File | What Was Done |
+|---|---|---|
+| P2b | `agent/agents/parser/adf_support.py` | ADF ZIP parser — AdfCatalog, reference resolution chain, DataFlow script DSL parser |
+| P2c | `agent/agents/parser/adf_support.py` | Real-world fixes: ForEach inner activities, encryptedCredential, MSI, child pipeline schedule |
+| ADF-FIX-1 | `agent/agents/parser/adf_support.py` | `_extract_value()`, preCopyScript, pipeline variables→load_strategy, SP canonical type |
+| ADF-FIX-2 | `tests/integration/test_adf_support.py` | Integration re-validation — all assertions pass |
+| YAML-FIX-1 | `agent/agents/cli_batch.py` | Batch CLI: process_one() calls YAML generator, returns yaml_path |
+| YAML-FIX-2 | `agent/agents/generation/yaml_generator.py` | 3 bug fixes + `_extract_value()` + `_AT_DATASET_RE` + `_build_v2_sources/targets` |
+| YAML-FIX-3 | `tests/integration/test_adf_support.py` | Full ADF ZIP → YAML integration test |
+
+**Validated result:** `VPFLookups_sync_PLE_support_live.zip` → schema-valid v2.0 YAML with
+`ls://VPFSqlServer` source, `msi://vqevdevml` target, 3 pre-steps, `{{ parameters.* }}` blocks.
+
+### 🔲 Next: Framework v2.0 (implement in this order)
+
+| Session | File | What to Do |
+|---|---|---|
+| **FW-V2a** | `framework/config/schema.json` | Rewrite to v2.0 — add parameters, sources[], targets[], pre_steps, watermark |
+| **FW-V2b** | `framework/config/resolver.py` | `ParameterResolver` — `{{ parameters.X }}` template substitution |
+| **FW-V2c** | `framework/execution/steps.py` | `StepExecutor` + `execute()`/`execute_procedure()` on all DB connectors |
+| **FW-V2d** | `framework/execution/watermark.py` | `WatermarkManager` — read/write watermark, write only on success |
+| **FW-V2e** | `framework/execution/control_table.py` | `ControlTableExecutor` — serial + parallel row iteration |
+| **FW-V2f** | `framework/execution/engine.py` | `ExecutionEngine` v2.0 rewrite + `runner.py` `--param` flag |
+| **A-V2** | `agent/agents/generation/yaml_generator.py` | `_render_v2_config()` for foreach_pattern + `agent/state.py` |
+
+Full prompts for FW-V2a through A-V2: `docs/brainstorming/control-table-and-framework-v2.md` section 8.
+
+### 📋 Remaining items in this plan (unchanged)
+
+Continue with F0 through X3 below after Framework v2.0 is done.
+
+---
 
 ---
 
@@ -70,9 +113,9 @@ make test && ruff check framework/ agent/ && echo "Session complete ✅"
 - [ ] **C15** — `http_api`
 
 ### Agent — Core Pipeline
-- [ ] **A1** — `agent/state.py` (AgentState TypedDict)
+- [ ] **A1** — `agent/state.py` (AgentState TypedDict) ← included in A-V2
 - [ ] **A2** — `agent/agents/analysis/complexity.py`
-- [ ] **A3** — `agent/agents/generation/yaml_generator.py`
+- [x] **A3** — `agent/agents/generation/yaml_generator.py` ← v2.0 done in YAML-FIX-2 locally
 - [ ] **A4** — `agent/agents/validation/syntax_validator.py`
 - [ ] **A5** — `agent/graph.py` (LangGraph wiring — core nodes)
 - [ ] **A6** — `agent/agents/review/pr_generator.py`
@@ -80,7 +123,9 @@ make test && ruff check framework/ agent/ && echo "Session complete ✅"
 
 ### Agent — Parsers
 - [ ] **P1** — `agent/agents/parser/informatica.py` (production Informatica parser)
-- [ ] **P2** — `agent/agents/parser/adf.py` (ADF pipeline + Data Flow JSON)
+- [x] **P2b** — `agent/agents/parser/adf_support.py` — ADF ZIP parser (AdfCatalog, DataFlow DSL, ref chain) ✅ done locally
+- [x] **P2c** — `agent/agents/parser/adf_support.py` — ForEach, encryptedCredential, MSI, child schedule ✅ done locally
+- [x] **ADF-FIX-1** — `agent/agents/parser/adf_support.py` — `_extract_value()`, preCopyScript, pipeline vars, SP type ✅ done locally
 - [ ] **P3** — `agent/agents/parser/ssis.py` (SSIS .dtsx package)
 - [ ] **P4** — `agent/agents/parser/dispatcher.py` (multi-source auto-detect)
 
@@ -90,10 +135,22 @@ make test && ruff check framework/ agent/ && echo "Session complete ✅"
 - [ ] **E3** — `rules/ssis.yaml` + SSIS pre-processing pipeline
 - [ ] **E4** — `agent/agents/translation/llm_translator.py` (tiered Haiku → Sonnet → manual)
 
-### Agent — Advanced
-- [ ] **X1** — `agent/cli_batch.py` (batch migration CLI)
+### Agent — Advanced (Batch CLI + Integration)
+- [x] **YAML-FIX-1** — `agent/agents/cli_batch.py` — batch CLI, calls YAML generator ✅ done locally
+- [x] **YAML-FIX-2** — `agent/agents/generation/yaml_generator.py` — 3 bug fixes, Expression dict, @dataset ✅ done locally
+- [x] **YAML-FIX-3** — `tests/integration/test_adf_support.py` — ZIP → YAML integration test ✅ done locally
+- [ ] **X1** — Extend `agent/cli.py` with batch command (wire to cli_batch.py)
 - [ ] **X2** — Observability (structured metrics in `framework/execution/engine.py`)
-- [ ] **X3** — Integration test suite (`tests/integration/`)
+- [ ] **X3** — Full integration test suite (`tests/integration/`)
+
+### Framework v2.0 (new — required for control-table pattern)
+- [ ] **FW-V2a** — `framework/config/schema.json` v2.0 (parameters, sources[], targets[], pre_steps)
+- [ ] **FW-V2b** — `framework/config/resolver.py` (`ParameterResolver`)
+- [ ] **FW-V2c** — `framework/execution/steps.py` (`StepExecutor` + DB connector execute())
+- [ ] **FW-V2d** — `framework/execution/watermark.py` (`WatermarkManager`)
+- [ ] **FW-V2e** — `framework/execution/control_table.py` (`ControlTableExecutor`)
+- [ ] **FW-V2f** — `framework/execution/engine.py` v2.0 + `runner.py` `--param` flag
+- [ ] **A-V2** — `agent/agents/generation/yaml_generator.py` `_render_v2_config()` + `agent/state.py`
 
 ---
 
