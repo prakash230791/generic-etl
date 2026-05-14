@@ -859,6 +859,682 @@ Run: pytest tests/test_framework.py -k "scd" -v
 
 ---
 
+#### Session FH-CON-5 — PostgreSQL Connector
+
+**Duration:** ~45 min | **Files:** `framework/connectors/postgres.py`
+**Tests:** `pytest tests/test_framework.py -k "postgres" -v`
+**Depends on:** FH-CON-1 (ConnectionTestResult, execute() on base)
+**pip:** `psycopg2-binary>=2.9` (add to pyproject.toml)
+
+##### Connection ref format
+
+```yaml
+# In YAML sources/targets:
+connector: postgres
+connection: ls://DWConn       # env var: CONN_POSTGRES_DWCONN=host=...;dbname=...;user=...;password=...
+# OR
+connection: kv://vault/secret/pg-dw   # Vault KV secret containing JSON: {host, port, dbname, user, password}
+```
+
+The SecretsResolver resolves `ls://` and `kv://` to a DSN string before the connector sees it.
+
+##### Session Prompt
+
+```
+Implement framework/connectors/postgres.py — PostgreSQL connector with bulk COPY FROM.
+
+Read FIRST:
+  #file:framework/connectors/base.py
+  #file:framework/connectors/sqlite.py          (reference implementation)
+  #file:docs/brainstorming/framework-hardening-plan.md  (this section)
+  #file:docs/architecture/02-scalability.md     (section 5.2 PostgreSQL COPY FROM)
+
+Dependencies (add to pyproject.toml optional-dependencies):
+  postgres = ["psycopg2-binary>=2.9"]
+
+Implement framework/connectors/postgres.py:
+
+  class PostgreSQLConnector(BaseConnector):
+      connector_type = "postgres"
+
+      def __init__(self, config: dict) -> None:
+          super().__init__(config)
+          # config["connection"] is already resolved by SecretsResolver
+          # Format: "host=... port=5432 dbname=... user=... password=..."
+          # OR connection dict: {host, port, dbname, user, password}
+          self._dsn = self._build_dsn(config["connection"])
+          self._schema = config.get("schema", "public")
+          self._engine = None  # lazy; use _get_engine() below
+
+      def _get_engine(self):
+          from sqlalchemy import create_engine
+          if self._engine is None:
+              self._engine = create_engine(f"postgresql+psycopg2:///{self._dsn}",
+                                            pool_pre_ping=True, pool_size=2)
+          return self._engine
+
+      def read(self) -> pd.DataFrame:
+          query = self.config.get("query") or f'SELECT * FROM {self.config["table"]}'
+          # Inject :watermark param if present in config
+          params = self.config.get("params", {})
+          return pd.read_sql(query, self._get_engine(), params=params)
+
+      def write(self, df: pd.DataFrame) -> None:
+          table = self.config["table"]
+          strategy = self.config.get("load_strategy", "append")  # append | replace | upsert
+          if strategy == "replace":
+              self._truncate_and_copy(df, table)
+          elif len(df) > 10_000:
+              self._bulk_copy(df, table)              # COPY FROM for large loads
+          else:
+              df.to_sql(table, self._get_engine(), if_exists="append",
+                        index=False, method="multi", chunksize=1000)
+
+      def _bulk_copy(self, df: pd.DataFrame, table: str) -> None:
+          """PostgreSQL COPY FROM STDIN — 10–100× faster than INSERT for >10K rows."""
+          from io import StringIO
+          import psycopg2
+          buffer = StringIO()
+          df.to_csv(buffer, index=False, header=False)
+          buffer.seek(0)
+          with psycopg2.connect(self._dsn) as conn:
+              cursor = conn.cursor()
+              cursor.copy_expert(f"COPY {table} FROM STDIN WITH (FORMAT CSV)", buffer)
+
+      def _truncate_and_copy(self, df: pd.DataFrame, table: str) -> None:
+          import psycopg2
+          with psycopg2.connect(self._dsn) as conn:
+              cursor = conn.cursor()
+              cursor.execute(f"TRUNCATE TABLE {table}")
+              self._bulk_copy(df, table)
+
+      def execute(self, sql: str) -> None:
+          import psycopg2
+          with psycopg2.connect(self._dsn) as conn:
+              conn.cursor().execute(sql)
+
+      def execute_procedure(self, name: str, params: dict) -> None:
+          import psycopg2
+          placeholders = ", ".join(f"%({k})s" for k in params)
+          with psycopg2.connect(self._dsn) as conn:
+              conn.cursor().execute(f"CALL {name}({placeholders})", params)
+
+      def test_connection(self) -> ConnectionTestResult:
+          import psycopg2, time
+          start = time.monotonic()
+          try:
+              with psycopg2.connect(self._dsn, connect_timeout=10) as conn:
+                  cursor = conn.cursor()
+                  cursor.execute("SELECT current_database(), version()")
+                  db_name, version = cursor.fetchone()
+                  cursor.execute("SELECT tablename FROM pg_tables WHERE schemaname = %s LIMIT 5",
+                                 (self._schema,))
+                  tables = [r[0] for r in cursor.fetchall()]
+                  latency = round((time.monotonic() - start) * 1000)
+                  return ConnectionTestResult(
+                      connector_type="postgres", connection_ref=self._mask_ref(),
+                      role=self.config.get("_role", "unknown"), ok=True,
+                      latency_ms=latency, can_read=True, can_write=True,
+                      schema_info=tables)
+          except Exception as e:
+              return ConnectionTestResult(
+                  connector_type="postgres", connection_ref=self._mask_ref(),
+                  role=self.config.get("_role", "unknown"), ok=False, error=str(e))
+
+      def close(self) -> None:
+          if self._engine:
+              self._engine.dispose()
+
+Register in pyproject.toml:
+  [project.entry-points."etl.connectors"]
+  postgres = "framework.connectors.postgres:PostgreSQLConnector"
+
+Tests (use a real PostgreSQL via pytest-docker or mock psycopg2 with monkeypatch):
+  - test_postgres_read_returns_dataframe             (mock: pd.read_sql)
+  - test_postgres_write_small_uses_to_sql            (<10K rows)
+  - test_postgres_write_large_uses_bulk_copy         (>10K rows — mock copy_expert)
+  - test_postgres_write_replace_truncates_first
+  - test_postgres_execute_runs_sql
+  - test_postgres_test_connection_ok
+  - test_postgres_test_connection_bad_dsn_returns_ok_false
+
+Run: pytest tests/test_framework.py -k "postgres" -v
+```
+
+---
+
+#### Session FH-CON-6 — SQL Server Connector (SQL Auth + Windows Auth)
+
+**Duration:** ~50 min | **Files:** `framework/connectors/sqlserver.py`
+**Tests:** `pytest tests/test_framework.py -k "sqlserver" -v`
+**Depends on:** FH-CON-1
+**pip:** `pyodbc>=4.0`, `sqlalchemy>=2.0` (add to pyproject.toml)
+
+##### Connection ref formats
+
+```yaml
+connector: sqlserver
+connection: ls://SrcDB        # env var: CONN_SQLSERVER_SRCDB — ODBC connection string or JSON
+auth: sql                     # sql | windows | msi (default: sql)
+
+# ls:// resolves to an ODBC connection string:
+# "DRIVER={ODBC Driver 18 for SQL Server};Server=myserver.database.windows.net;Database=mydb;UID=user;PWD=secret"
+# OR a JSON: {"server": "...", "database": "...", "user": "...", "password": "..."}
+```
+
+##### Session Prompt
+
+```
+Implement framework/connectors/sqlserver.py — SQL Server connector with BCP bulk write.
+
+Read FIRST:
+  #file:framework/connectors/base.py
+  #file:framework/connectors/postgres.py        (reference for structure)
+  #file:docs/architecture/02-scalability.md     (section 5.1 SQL Server BCP)
+  #file:docs/brainstorming/framework-hardening-plan.md  (this section)
+
+Dependencies (add to pyproject.toml):
+  sqlserver = ["pyodbc>=4.0", "sqlalchemy>=2.0"]
+
+Implement framework/connectors/sqlserver.py:
+
+  class SQLServerConnector(BaseConnector):
+      connector_type = "sqlserver"
+
+      _ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
+
+      def __init__(self, config: dict) -> None:
+          super().__init__(config)
+          self._conn_str = self._build_conn_str(config)
+          self._engine = None
+
+      def _build_conn_str(self, config: dict) -> str:
+          """Build ODBC connection string from config.
+          Accepts: raw ODBC string, JSON dict, or ls:// resolved value."""
+          conn = config["connection"]
+          if isinstance(conn, dict):
+              return (
+                  f"DRIVER={{{self._ODBC_DRIVER}}};"
+                  f"Server={conn['server']};Database={conn['database']};"
+                  f"UID={conn['user']};PWD={conn['password']};"
+                  "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+              )
+          # Assume already a valid ODBC string
+          if "DRIVER" in conn.upper():
+              return conn
+          raise ValueError(f"Cannot parse SQL Server connection: {conn[:30]}...")
+
+      def read(self) -> pd.DataFrame:
+          query = self.config.get("query") or f"SELECT * FROM {self.config['table']}"
+          params = self.config.get("params", {})
+          import pyodbc
+          with pyodbc.connect(self._conn_str) as conn:
+              return pd.read_sql(query, conn, params=list(params.values()) if params else None)
+
+      def read_chunked(self, chunk_size: int = 100_000):
+          """Generator: yield DataFrames in chunks for large tables."""
+          query = self.config.get("query") or f"SELECT * FROM {self.config['table']}"
+          import pyodbc
+          with pyodbc.connect(self._conn_str) as conn:
+              for chunk in pd.read_sql(query, conn, chunksize=chunk_size):
+                  yield chunk
+
+      def write(self, df: pd.DataFrame) -> None:
+          table = self.config["table"]
+          strategy = self.config.get("load_strategy", "append")
+          import pyodbc
+          if strategy == "replace":
+              with pyodbc.connect(self._conn_str) as conn:
+                  conn.cursor().execute(f"TRUNCATE TABLE {table}")
+          if len(df) > 100_000 and self.config.get("use_bcp", False):
+              self._bcp_write(df, table)
+          else:
+              self._fast_executemany_write(df, table)
+
+      def _fast_executemany_write(self, df: pd.DataFrame, table: str) -> None:
+          """pyodbc fast_executemany — 10–50× faster than default INSERT."""
+          import pyodbc
+          cols = ", ".join(df.columns)
+          placeholders = ", ".join("?" * len(df.columns))
+          sql = f"INSERT INTO {table} ({cols}) VALUES ({placeholders})"
+          with pyodbc.connect(self._conn_str) as conn:
+              conn.fast_executemany = True
+              cursor = conn.cursor()
+              cursor.executemany(sql, df.values.tolist())
+
+      def _bcp_write(self, df: pd.DataFrame, table: str) -> None:
+          """BCP bulk copy for very large loads (>100K rows). Requires bcp CLI installed."""
+          import tempfile, subprocess
+          with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+              df.to_csv(f, index=False, header=False)
+              tmp_path = f.name
+          # Parse server/db from conn str for BCP args
+          parts = dict(p.split("=", 1) for p in self._conn_str.split(";") if "=" in p)
+          bcp_cmd = [
+              "bcp", table, "in", tmp_path,
+              "-S", parts.get("Server", ""),
+              "-d", parts.get("Database", ""),
+              "-U", parts.get("UID", ""),
+              "-P", parts.get("PWD", ""),
+              "-c", "-t,", "-b", "10000",
+          ]
+          subprocess.run(bcp_cmd, check=True)
+
+      def execute(self, sql: str) -> None:
+          import pyodbc
+          with pyodbc.connect(self._conn_str) as conn:
+              conn.cursor().execute(sql)
+
+      def execute_procedure(self, name: str, params: dict) -> None:
+          """Execute stored procedure with named parameters."""
+          import pyodbc
+          placeholders = ", ".join(f"@{k} = ?" for k in params)
+          sql = f"EXEC {name} {placeholders}"
+          with pyodbc.connect(self._conn_str) as conn:
+              conn.cursor().execute(sql, list(params.values()))
+
+      def test_connection(self) -> ConnectionTestResult:
+          import pyodbc, time
+          start = time.monotonic()
+          try:
+              with pyodbc.connect(self._conn_str, timeout=10) as conn:
+                  cursor = conn.cursor()
+                  cursor.execute("SELECT DB_NAME(), @@VERSION")
+                  db_name, version = cursor.fetchone()
+                  cursor.execute(
+                      "SELECT TOP 5 TABLE_SCHEMA + '.' + TABLE_NAME "
+                      "FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'"
+                  )
+                  tables = [r[0] for r in cursor.fetchall()]
+                  latency = round((time.monotonic() - start) * 1000)
+                  return ConnectionTestResult(
+                      connector_type="sqlserver", connection_ref=self._mask_ref(),
+                      role=self.config.get("_role", "unknown"), ok=True,
+                      latency_ms=latency, can_read=True, can_write=True,
+                      schema_info=tables)
+          except Exception as e:
+              return ConnectionTestResult(
+                  connector_type="sqlserver", connection_ref=self._mask_ref(),
+                  role=self.config.get("_role", "unknown"), ok=False, error=str(e))
+
+  Add _mask_ref() helper to BaseConnector:
+      def _mask_ref(self) -> str:
+          """Return connection string with password masked — safe for logging."""
+          conn = str(self.config.get("connection", ""))
+          import re
+          return re.sub(r"(PWD|password)=[^;]+", r"\1=***", conn, flags=re.IGNORECASE)
+
+Register in pyproject.toml:
+  sqlserver = "framework.connectors.sqlserver:SQLServerConnector"
+
+Tests (mock pyodbc.connect):
+  - test_sqlserver_read_executes_query
+  - test_sqlserver_write_small_uses_fast_executemany
+  - test_sqlserver_write_replace_truncates_first
+  - test_sqlserver_execute_sp_with_params
+  - test_sqlserver_test_connection_ok
+  - test_sqlserver_mask_ref_hides_password
+
+Run: pytest tests/test_framework.py -k "sqlserver" -v
+```
+
+---
+
+#### Session FH-CON-7 — Azure SQL Managed Identity (MSI) Auth
+
+**Duration:** ~40 min | **Files:** `framework/connectors/azure_sql.py`
+**Tests:** `pytest tests/test_framework.py -k "azure_sql" -v`
+**Depends on:** FH-CON-6 (SQLServerConnector — inherits everything)
+**pip:** `azure-identity>=1.15` (add to pyproject.toml)
+
+##### Why a Separate Connector?
+
+Azure SQL is SQL Server at the engine level. The only difference is **authentication** —
+no username/password; instead an Azure AD token obtained from the Azure compute's
+Managed Identity (MSI). The `msi://` connection ref prefix signals this to the SecretsResolver.
+
+```yaml
+# ADF-generated YAML — msi:// means Managed Identity, no credentials in config
+connector: azure_sql
+connection: msi://vqevdevml    # vqevdevml = credential name / user-assigned MI client id
+                               # blank = system-assigned MI
+database: MyDatabase
+server:   myserver.database.windows.net
+```
+
+##### MSI Token Flow
+
+```
+K8s pod (IRSA / Workload Identity)
+    │
+    ▼ azure.identity.ManagedIdentityCredential.get_token("https://database.windows.net/")
+    │   → hits Azure IMDS endpoint: http://169.254.169.254/metadata/identity/...
+    │   → returns JWT token (no username/password involved)
+    ▼
+pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_bytes})
+    │
+    ▼ Azure SQL accepts token, grants access based on MI's AAD object permissions
+```
+
+**Local laptop note:** MSI does not work outside Azure. For local testing, set env var
+`AZURE_SQL_USE_SQL_AUTH=true` and provide SQL credentials — the connector auto-detects.
+
+##### Session Prompt
+
+```
+Implement framework/connectors/azure_sql.py — extends SQLServerConnector with MSI auth.
+
+Read FIRST:
+  #file:framework/connectors/sqlserver.py
+  #file:framework/connectors/base.py
+  #file:docs/brainstorming/framework-hardening-plan.md  (this section — MSI token flow)
+
+Dependencies (add to pyproject.toml):
+  azure = ["azure-identity>=1.15"]
+
+Implement framework/connectors/azure_sql.py:
+
+  import struct
+  from framework.connectors.sqlserver import SQLServerConnector
+
+  class AzureSQLConnector(SQLServerConnector):
+      """SQL Server connector using Azure AD Managed Identity — no username/password."""
+      connector_type = "azure_sql"
+
+      _SQL_COPT_SS_ACCESS_TOKEN = 1256   # pyodbc attribute constant
+
+      def __init__(self, config: dict) -> None:
+          # Build conn string WITHOUT UID/PWD
+          self._server   = config["server"]
+          self._database = config["database"]
+          self._mi_client_id = self._parse_mi_client_id(config["connection"])
+          self._use_sql_auth = os.getenv("AZURE_SQL_USE_SQL_AUTH", "false").lower() == "true"
+          if self._use_sql_auth:
+              # Local dev fallback: read SQL creds from env
+              config["connection"] = {
+                  "server": self._server, "database": self._database,
+                  "user": os.environ["AZURE_SQL_USER"], "password": os.environ["AZURE_SQL_PASSWORD"]
+              }
+              super().__init__(config)
+          else:
+              BaseConnector.__init__(self, config)
+              self._conn_str = (
+                  f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+                  f"Server={self._server};Database={self._database};"
+                  "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+              )
+
+      def _parse_mi_client_id(self, connection_ref: str) -> str | None:
+          """Extract client_id from 'msi://client-id-or-name'. Returns None for system-assigned."""
+          if connection_ref.startswith("msi://"):
+              val = connection_ref[6:]
+              return val if val else None
+          return None
+
+      def _get_token_bytes(self) -> bytes:
+          """Acquire MSI token and encode for pyodbc SQL_COPT_SS_ACCESS_TOKEN."""
+          from azure.identity import ManagedIdentityCredential
+          kwargs = {"client_id": self._mi_client_id} if self._mi_client_id else {}
+          credential = ManagedIdentityCredential(**kwargs)
+          token = credential.get_token("https://database.windows.net/")
+          token_bytes = token.token.encode("UTF-16-LE")
+          return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+
+      def _connect(self):
+          """Return a pyodbc connection using MSI token (or SQL auth in local mode)."""
+          import pyodbc
+          if self._use_sql_auth:
+              return pyodbc.connect(self._conn_str)
+          token_bytes = self._get_token_bytes()
+          return pyodbc.connect(self._conn_str,
+                                attrs_before={self._SQL_COPT_SS_ACCESS_TOKEN: token_bytes})
+
+      # Override read/write/execute/test_connection to use _connect() instead of
+      # pyodbc.connect(self._conn_str) directly — all other logic is inherited.
+
+      def read(self) -> pd.DataFrame:
+          query = self.config.get("query") or f"SELECT * FROM {self.config['table']}"
+          with self._connect() as conn:
+              return pd.read_sql(query, conn)
+
+      def write(self, df: pd.DataFrame) -> None:
+          table = self.config["table"]
+          if self.config.get("load_strategy") == "replace":
+              with self._connect() as conn:
+                  conn.cursor().execute(f"TRUNCATE TABLE {table}")
+          self._fast_executemany_write_via(df, table, self._connect)
+
+      def _fast_executemany_write_via(self, df, table, connect_fn):
+          cols = ", ".join(df.columns)
+          ph = ", ".join("?" * len(df.columns))
+          sql = f"INSERT INTO {table} ({cols}) VALUES ({ph})"
+          with connect_fn() as conn:
+              conn.fast_executemany = True
+              conn.cursor().executemany(sql, df.values.tolist())
+
+      def execute(self, sql: str) -> None:
+          with self._connect() as conn:
+              conn.cursor().execute(sql)
+
+      def execute_procedure(self, name: str, params: dict) -> None:
+          ph = ", ".join(f"@{k} = ?" for k in params)
+          with self._connect() as conn:
+              conn.cursor().execute(f"EXEC {name} {ph}", list(params.values()))
+
+      def test_connection(self) -> ConnectionTestResult:
+          import time
+          start = time.monotonic()
+          try:
+              with self._connect() as conn:
+                  cursor = conn.cursor()
+                  cursor.execute("SELECT DB_NAME()")
+                  db_name = cursor.fetchone()[0]
+                  latency = round((time.monotonic() - start) * 1000)
+                  return ConnectionTestResult(
+                      connector_type="azure_sql",
+                      connection_ref=self.config["connection"],   # msi://... is safe to log
+                      role=self.config.get("_role", "unknown"), ok=True,
+                      latency_ms=latency, can_read=True, can_write=True,
+                      schema_info=[db_name])
+          except Exception as e:
+              return ConnectionTestResult(
+                  connector_type="azure_sql",
+                  connection_ref=self.config["connection"], ok=False,
+                  role=self.config.get("_role", "unknown"), error=str(e))
+
+Register in pyproject.toml:
+  azure_sql = "framework.connectors.azure_sql:AzureSQLConnector"
+
+Tests (mock ManagedIdentityCredential and pyodbc.connect):
+  - test_azure_sql_uses_msi_token_when_not_local
+  - test_azure_sql_falls_back_to_sql_auth_in_local_mode  (AZURE_SQL_USE_SQL_AUTH=true)
+  - test_azure_sql_parses_system_assigned_mi   (connection: msi://)
+  - test_azure_sql_parses_user_assigned_mi     (connection: msi://some-client-id)
+  - test_azure_sql_test_connection_masks_nothing  (msi:// ref is safe to log)
+  - test_azure_sql_read_uses_msi_connection
+
+Run: pytest tests/test_framework.py -k "azure_sql" -v
+
+LOCAL TESTING NOTE: Set AZURE_SQL_USE_SQL_AUTH=true and provide AZURE_SQL_USER /
+AZURE_SQL_PASSWORD env vars to test against a real Azure SQL instance from your laptop.
+The msi:// auth path requires running inside Azure (AKS pod with MSI enabled).
+```
+
+---
+
+#### Session FH-CON-8 — Oracle Connector
+
+**Duration:** ~45 min | **Files:** `framework/connectors/oracle.py`
+**Tests:** `pytest tests/test_framework.py -k "oracle" -v`
+**Depends on:** FH-CON-1
+**pip:** `python-oracledb>=2.0` (thin mode — NO Oracle Client installation required)
+
+##### Connection ref formats
+
+```yaml
+connector: oracle
+connection: ls://OracleDB    # resolves to JSON: {host, port, service_name, user, password}
+# OR explicit:
+connection: kv://vault/secret/oracle-prod
+# Resolved to: {"host":"myhost","port":1521,"service_name":"ORCL","user":"etl","password":"..."}
+
+# Thin mode DSN (no Oracle Client needed):
+# oracledb.connect(user=user, password=password, dsn="host:port/service_name")
+```
+
+##### Thin Mode vs Thick Mode
+
+```
+python-oracledb thin mode:  pure Python, no Oracle Instant Client, works anywhere
+python-oracledb thick mode: requires Oracle Instant Client libraries (DLL/SO files)
+
+Use THIN MODE for this connector — no installation burden on K8s pods or developer laptops.
+Thick mode only needed for: advanced queuing, sharding, or Oracle Call Interface features.
+```
+
+##### Session Prompt
+
+```
+Implement framework/connectors/oracle.py using python-oracledb in thin mode.
+
+Read FIRST:
+  #file:framework/connectors/base.py
+  #file:framework/connectors/sqlserver.py   (reference for structure)
+  #file:docs/brainstorming/framework-hardening-plan.md  (this section)
+
+Dependencies (add to pyproject.toml):
+  oracle = ["python-oracledb>=2.0"]
+
+Implement framework/connectors/oracle.py:
+
+  class OracleConnector(BaseConnector):
+      connector_type = "oracle"
+
+      def __init__(self, config: dict) -> None:
+          super().__init__(config)
+          conn = config["connection"]  # already resolved by SecretsResolver
+          if isinstance(conn, str) and conn.startswith("{"):
+              import json
+              conn = json.loads(conn)
+          self._user     = conn["user"]
+          self._password = conn["password"]
+          self._dsn      = self._build_dsn(conn)
+
+      def _build_dsn(self, conn: dict) -> str:
+          """Build thin-mode DSN: host:port/service_name."""
+          host    = conn.get("host", "localhost")
+          port    = conn.get("port", 1521)
+          service = conn.get("service_name") or conn.get("sid", "ORCL")
+          return f"{host}:{port}/{service}"
+
+      def _connect(self):
+          import oracledb
+          return oracledb.connect(user=self._user, password=self._password, dsn=self._dsn)
+
+      def read(self) -> pd.DataFrame:
+          query = self.config.get("query") or f'SELECT * FROM {self.config["table"]}'
+          params = self.config.get("params", {})
+          with self._connect() as conn:
+              # Oracle uses :name style bind params (same as watermark pattern)
+              return pd.read_sql(query, conn, params=params)
+
+      def read_chunked(self, chunk_size: int = 100_000):
+          """Stream large Oracle tables using fetchmany()."""
+          query = self.config.get("query") or f'SELECT * FROM {self.config["table"]}'
+          with self._connect() as conn:
+              cursor = conn.cursor()
+              cursor.execute(query)
+              cols = [desc[0] for desc in cursor.description]
+              while True:
+                  rows = cursor.fetchmany(chunk_size)
+                  if not rows:
+                      break
+                  yield pd.DataFrame(rows, columns=cols)
+
+      def write(self, df: pd.DataFrame) -> None:
+          table = self.config["table"]
+          strategy = self.config.get("load_strategy", "append")
+          with self._connect() as conn:
+              if strategy == "replace":
+                  conn.cursor().execute(f"DELETE FROM {table}")
+              self._array_dml_write(df, table, conn)
+
+      def _array_dml_write(self, df: pd.DataFrame, table: str, conn) -> None:
+          """Oracle array DML — batches INSERT for high throughput."""
+          cols = list(df.columns)
+          col_list = ", ".join(cols)
+          placeholders = ", ".join(f":{i+1}" for i in range(len(cols)))
+          sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
+          data = [tuple(row) for row in df.itertuples(index=False, name=None)]
+          cursor = conn.cursor()
+          cursor.executemany(sql, data, batcherrors=True)
+          errors = cursor.getbatcherrors()
+          if errors:
+              for err in errors[:5]:
+                  logger.error("Oracle batch insert error row %d: %s", err.offset, err.message)
+              raise RuntimeError(f"Oracle array DML had {len(errors)} errors")
+
+      def execute(self, sql: str) -> None:
+          with self._connect() as conn:
+              conn.cursor().execute(sql)
+
+      def execute_procedure(self, name: str, params: dict) -> None:
+          """Call an Oracle stored procedure."""
+          with self._connect() as conn:
+              conn.cursor().callproc(name, keywordParameters=params)
+
+      def test_connection(self) -> ConnectionTestResult:
+          import oracledb, time
+          start = time.monotonic()
+          try:
+              with self._connect() as conn:
+                  cursor = conn.cursor()
+                  cursor.execute(
+                      "SELECT ora_database_name, SYS_CONTEXT('USERENV','DB_NAME') FROM DUAL"
+                  )
+                  db_name, _ = cursor.fetchone()
+                  cursor.execute(
+                      "SELECT table_name FROM user_tables WHERE ROWNUM <= 5"
+                  )
+                  tables = [r[0] for r in cursor.fetchall()]
+                  latency = round((time.monotonic() - start) * 1000)
+                  return ConnectionTestResult(
+                      connector_type="oracle",
+                      connection_ref=f"oracle://{self._dsn}",    # no password
+                      role=self.config.get("_role", "unknown"), ok=True,
+                      latency_ms=latency, can_read=True, can_write=True,
+                      schema_info=tables)
+          except Exception as e:
+              return ConnectionTestResult(
+                  connector_type="oracle",
+                  connection_ref=f"oracle://{self._dsn}",
+                  role=self.config.get("_role", "unknown"), ok=False, error=str(e))
+
+      def close(self) -> None:
+          pass   # oracledb connections closed via context manager
+
+Register in pyproject.toml:
+  oracle = "framework.connectors.oracle:OracleConnector"
+
+Tests (mock oracledb.connect):
+  - test_oracle_builds_dsn_from_dict_config
+  - test_oracle_read_returns_dataframe
+  - test_oracle_write_uses_array_dml
+  - test_oracle_write_replace_deletes_first
+  - test_oracle_execute_procedure_uses_callproc
+  - test_oracle_test_connection_ok
+  - test_oracle_dsn_never_contains_password    (assert password not in connection_ref)
+  - test_oracle_chunked_read_yields_batches
+
+THIN MODE NOTE: python-oracledb thin mode is pure Python (no .so/.dll required).
+Verify with: python -c "import oracledb; print(oracledb.is_thin_mode())"  → True.
+Do NOT call oracledb.init_oracle_client() anywhere in this connector.
+
+Run: pytest tests/test_framework.py -k "oracle" -v
+```
+
+---
+
 ### Phase C: Transform Hardening (P0 Priority)
 
 ---
@@ -1451,12 +2127,16 @@ From `control-table-and-framework-v2.md` — implement FW-V2a → FW-V2f first (
 
 ### Phase B: Connector Hardening
 
-| Session | Files | Time | Status |
-|---|---|---|---|
-| **FH-CON-1** | base.py + connection_test.py | 30 min | 🔲 |
-| **FH-CON-2** | runner.py (test-connection CLI) | 25 min | 🔲 |
-| **FH-CON-3** | csv_file.py (complete) | 25 min | 🔲 |
-| **FH-CON-4** | scd_type_2.py (complete) | 50 min | 🔲 |
+| Session | Files | Auth / Notes | Time | Status |
+|---|---|---|---|---|
+| **FH-CON-1** | base.py + connection_test.py | ConnectionTestResult + abstract test_connection() | 30 min | 🔲 |
+| **FH-CON-2** | runner.py (test-connection CLI) | exit 0/1 for CI | 25 min | 🔲 |
+| **FH-CON-3** | csv_file.py (complete stub) | local filesystem | 25 min | 🔲 |
+| **FH-CON-4** | scd_type_2.py (complete stub) | SQLite / any connector | 50 min | 🔲 |
+| **FH-CON-5** | connectors/postgres.py | SQL auth; COPY FROM bulk write | 45 min | 🔲 |
+| **FH-CON-6** | connectors/sqlserver.py | SQL auth + Windows auth; BCP + fast_executemany | 50 min | 🔲 |
+| **FH-CON-7** | connectors/azure_sql.py | **MSI / Managed Identity** (msi://); inherits SQL Server | 40 min | 🔲 |
+| **FH-CON-8** | connectors/oracle.py | **Oracle thin mode** (no Instant Client); array DML | 45 min | 🔲 |
 
 ### Phase C: Transform Hardening
 
@@ -1483,14 +2163,25 @@ From `control-table-and-framework-v2.md` — implement FW-V2a → FW-V2f first (
 
 ### Grand Total
 
-| Phase | Sessions | Time |
-|---|---|---|
-| A: Framework v2.0 (prerequisite) | 6 | ~4.5 hrs |
-| B: Connector hardening | 4 | ~2.1 hrs |
-| C: Transform hardening | 5 | ~3.3 hrs |
-| D: Execution engine | 1 | ~1.0 hrs |
-| E: Orchestration | 2 | ~1.4 hrs |
-| **Total** | **18** | **~12.3 hrs** |
+| Phase | Sessions | Time | Connectors / Features |
+|---|---|---|---|
+| A: Framework v2.0 (prerequisite) | 6 | ~4.5 hrs | schema v2, resolver, steps, watermark, control_table, engine |
+| B: Connector hardening | 8 | ~4.7 hrs | SQLite✓, CSV, SCD2, PostgreSQL, SQL Server, Azure SQL (MSI), Oracle |
+| C: Transform hardening | 5 | ~3.3 hrs | stream_join, aggregate, union, conditional_load, asserts, mask_pii |
+| D: Execution engine | 1 | ~1.0 hrs | ExecutionDAG topological sort, NamedDatasetRegistry |
+| E: Orchestration | 2 | ~1.4 hrs | Airflow DAG factory, dbt StepExecutor |
+| **Total** | **22** | **~14.9 hrs** | |
+
+### Connector Coverage Matrix
+
+| Connector | Auth Methods | Bulk Write | execute() | execute_procedure() | Session |
+|---|---|---|---|---|---|
+| SQLite | file path | — | ✅ | — | existing |
+| CSV File | filesystem | — | — | — | FH-CON-3 |
+| PostgreSQL | SQL (user/pass) | COPY FROM | ✅ | CALL | FH-CON-5 |
+| SQL Server | SQL + Windows (Kerberos) | BCP + fast_executemany | ✅ | EXEC sp | FH-CON-6 |
+| Azure SQL | **MSI / Managed Identity** | fast_executemany | ✅ | EXEC sp | FH-CON-7 |
+| Oracle | SQL (user/pass, thin mode) | Array DML | ✅ | callproc() | FH-CON-8 |
 
 ---
 
