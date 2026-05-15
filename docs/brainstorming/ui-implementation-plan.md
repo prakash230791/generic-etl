@@ -1,7 +1,8 @@
-# UI Implementation Plan — Agent + Framework
+# ETL Platform UI — Implementation Plan
 
-**Version:** 1.0 | **Date:** 2026-05-14
+**Version:** 2.0 | **Date:** 2026-05-15
 **Audience:** Engineering Team, Executive Sponsors
+**Scope:** Web UI for Migration Agent + Framework Executor → enterprise-grade ETL product
 **Companion docs:**
 - `langgraph-agent-implementation.md` — LG-0 through LG-7 (agent sessions)
 - `framework-hardening-plan.md` — FH-CON/TX/EX/ORC sessions
@@ -9,762 +10,709 @@
 
 ---
 
-## 1. Do We Need a UI? (Executive Answer)
+## 1. Executive Case: Why a UI Is Essential
 
-### Agent UI — YES, essential for exec demo and human-in-the-loop gate
+The CLI tools are complete and correct. But for an 18-month, 700-pipeline migration program with executive governance, a UI is essential for three unavoidable reasons:
 
-| Without UI | With UI |
-|---|---|
-| CLI black box: `python cli_batch.py input.zip` | Drag-drop ZIP → watch 8 nodes animate live |
-| No visibility into what the agent is doing | See parse → analyze → classify → translate in real-time |
-| Human review = editing YAML files in a text editor | Side-by-side diff: original ADF config vs generated YAML |
-| Migration progress = spreadsheet | Live dashboard: 67/700 pipelines, 92% automation rate, $2.1M saved |
+| Need | Without UI | With UI |
+|---|---|---|
+| Upload & convert 700 pipelines | Shell scripts, error-prone | Drag-drop, batch queue, progress |
+| Human review gate | Edit YAML files in a text editor | Side-by-side diff, approve/reject button |
+| Pause + resume | Kill process, lose state | Suspend run, reviewer edits, click Resume |
+| Executive reporting | Read JSON files | Dashboard: 450/700 converted, 85% confidence |
+| Framework execution | `etl-run run job.yaml` | Click Run, watch live logs, see row counts |
 
-**Executive moment:** drop a real Informatica XML onto the screen, watch it convert in 4 seconds, click Approve — that's the $6M cost-reduction story made tangible.
-
-### Framework UI — YES, for operator self-service and exec demo continuity
-
-| Without UI | With UI |
-|---|---|
-| Data engineers need SSH + CLI to run jobs | Pick YAML from catalog → fill params → one-click run |
-| No visibility into running jobs | Live log stream, row count counter, duration timer |
-| Debugging = digging through K8s pod logs | Filter by connector, status, date — click into any run |
-
-**Executive moment (continuation):** after the agent approves the YAML, switch to the Framework UI, hit Run — watch the row counter tick up from 0 to 500,000.
+**Bottom line for executives:** "We upload our 700 Informatica XML files, AI converts them, a human reviews the flagged 15%, and we click Approve. Done."
 
 ---
 
-## 2. The Executive Demo Script (5-minute live demo)
+## 2. Architecture Decision
+
+### Option A — Streamlit (rejected)
+
+Pros: fast to build. Cons: single-page, no WebSocket, no multi-user, not embeddable in enterprise portal.
+
+### Option B — FastAPI + React (chosen)
 
 ```
-Act 1 — "Here's the legacy problem"  (30 sec)
-  Show Informatica XML / ADF ZIP on screen
-  "700 of these. $8.7M/year. 4 admins to maintain them."
-
-Act 2 — Agent converts in real-time  (90 sec)
-  Drag the ZIP onto the Upload page
-  Watch the 8 nodes light up: [parse] [analyze] [classify] [translate] [generate] [validate] [report] [gate]
-  "94% confidence — AUTO APPROVED → YAML generated"
-
-Act 3 — Human review gate  (60 sec)
-  One pipeline shows human_queue badge
-  Open review page: left = ADF JSON, right = generated YAML, bottom = manual_queue items
-  Engineer reviews 2 items, clicks Approve
-  "The AI handles 90%+ automatically. Engineers focus on the 10% that needs judgment."
-
-Act 4 — Framework runs the YAML  (60 sec)
-  Switch to Framework UI → Job Catalog → click the approved job
-  Hit Run → watch live log: "source read: 450,000 rows" → "transform: row_filter" → "sink wrote: 448,231 rows"
-  "Same result as Informatica. Zero license cost."
-
-Act 5 — Migration dashboard  (60 sec)
-  Show: 67 pipelines migrated, 92% automation rate, $840K Informatica dev licenses decommissioned
-  "Month 6. On track for $5.5M savings by Month 18."
+Browser  (React + TypeScript + Tailwind + shadcn/ui)
+           │   REST + WebSocket
+           ▼
+FastAPI   (api/)
+  ├── POST /api/upload            → enqueue conversion job
+  ├── GET  /api/runs              → list all conversion runs
+  ├── GET  /api/runs/{id}         → run detail + state snapshot
+  ├── WS   /ws/runs/{id}          → stream live node updates          ← LangGraph
+  ├── POST /api/review/{id}       → submit approve / reject / edit
+  ├── POST /api/resume/{id}       → resume after human gate
+  ├── GET  /api/yamls             → list all generated YAMLs
+  ├── POST /api/execute           → run a YAML job
+  └── WS   /ws/execute/{id}       → stream framework execution logs   ← ExecutionEngine
+           │
+           ▼  (in-process Python calls)
+  agent.graph.build_graph()       ← existing LangGraph graph
+  framework.execution.engine.ExecutionEngine  ← existing engine
+           │
+           ▼
+  SQLite   (ui_state.db)          ← job registry, human review queue, audit log
 ```
+
+**Why FastAPI:** already installed, same process as agent+framework, WebSocket native, async compatible with LangGraph's `stream()`.
 
 ---
 
-## 3. Tech Stack Recommendation
+## 3. What the UI Delivers — Two Portals
 
-**Streamlit** — Python-only, zero frontend expertise, exec-demo-ready in hours.
-
-| Requirement | Streamlit Feature |
-|---|---|
-| File upload (ZIP, XML) | `st.file_uploader(accept_multiple_files=True)` |
-| Real-time agent progress | `st.status()` + `graph.stream()` iteration |
-| YAML preview + syntax highlight | `st.code(yaml_str, language="yaml")` |
-| Side-by-side diff | Two `st.columns()` with code blocks |
-| Pipeline gallery table | `st.dataframe()` with color-coded status column |
-| KPI metrics | `st.metric("Pipelines migrated", 67, delta="+12 this week")` |
-| Charts | `st.plotly_chart()` — confidence distribution, migration progress |
-| Live log streaming | `st.empty()` updated in a loop |
-| Edit YAML in browser | `st_ace` component (Streamlit ACE editor) |
-
-**Why not React/FastAPI?** — 3× more sessions, requires JS/CSS expertise, not token-efficient. Streamlit gives 80% of the demo value in 20% of the time.
-
-**Why not Gradio?** — Streamlit multi-page apps are better structured for a real product; Gradio is better for single ML model demos.
-
----
-
-## 4. File Layout
+### Portal A — Migration Workbench (Agent)
 
 ```
-ui/
-├── agent_app.py              Entry point: streamlit run ui/agent_app.py
-├── framework_app.py          Entry point: streamlit run ui/framework_app.py
-├── shared/
-│   ├── __init__.py
-│   ├── state_store.py        Lightweight SQLite-backed run history (no Redis needed)
-│   └── styles.py             Custom CSS (status badge colors, layout tweaks)
-├── agent_pages/
-│   ├── 01_upload.py          Upload ZIP/XML + trigger agent graph
-│   ├── 02_gallery.py         Pipeline gallery: all runs with status + confidence
-│   ├── 03_review.py          Human review: diff + manual queue + approve/reject
-│   └── 04_dashboard.py       Migration progress dashboard (KPIs + charts)
-└── framework_pages/
-    ├── 05_catalog.py         Job catalog: all YAML configs
-    ├── 06_runner.py          Job runner: pick YAML → params → run → stream logs
-    └── 07_history.py         Job run history: filter, sort, inspect
+┌─────────────────────────────────────────────────────────────────┐
+│  UPLOAD              │  QUEUE                │  REVIEW           │
+│                      │                       │                   │
+│  Drag & drop         │  Pipeline ID          │  IR tree          │
+│  .zip .xml .dtsx     │  Status badge         │  YAML diff        │
+│  Source type         │  Confidence %         │  Warnings         │
+│  Multi-file          │  Route colour         │  Approve ✓        │
+│                      │  Click → detail       │  Reject ✗         │
+│                      │                       │  Edit YAML        │
+│  LIVE RUN VIEW       │                       │  Resume ►         │
+│                      │                       │                   │
+│  ▶ parse    ●●●●● done  0.04s               │                   │
+│  🔍 analyze  ●●●●● done  0.12s  PORTFOLIO   │                   │
+│  ■ classify ●●●●● done  0.01s               │                   │
+│  🔄 translate●○○○○ running…    450 / 700 ✓  │                   │
+│  ⚙ generate ○○○○○ pending      38 in review │                   │
+│  ✓ validate ○○○○○ pending      85% avg conf │                   │
+│  ■ report   ○○○○○ pending      Complexity   │                   │
+│  🚪 gate    ○○○○○ pending      dist         │                   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**pyproject.toml additions:**
-```toml
-[project.optional-dependencies]
-ui = ["streamlit>=1.35", "plotly>=5.20", "streamlit-ace>=0.1"]
-```
+### Portal B — Framework Executor
 
-**Run commands:**
-```bash
-streamlit run ui/agent_app.py       # agent UI on :8501
-streamlit run ui/framework_app.py  # framework UI on :8502
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  YAML LIBRARY              │  LIVE EXECUTION                    │
+│                            │                                    │
+│  Filter: all / pending     │  Run ID: ab12…                    │
+│                            │  YAML: load_vpf.yaml              │
+│  ✓ load_vpf.yaml  auto     │  Status: running                  │
+│  ■ load_cust.yaml review   │                                    │
+│  ✗ load_ord.yaml  draft    │  [source]  read 4200              │
+│                            │  [filter]  pass 3891              │
+│  Click → YAML editor       │  [sink]    write…                 │
+│  Param overrides           │                                    │
+│  [▶ Run]  [🔍 Validate]    │  ████████░░  78%                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 5. Agent UI — Page Designs
-
-### Page 1: Upload
+## 4. Directory Structure
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  🔄 ETL Migration Agent                                  │
-│                                                          │
-│  Drop your pipeline files here                           │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  📁 Drag & drop  ADF .zip  /  Informatica .xml  │   │
-│  │     or click to browse                           │   │
-│  └──────────────────────────────────────────────────┘   │
-│                                                          │
-│  ☑ Enable LLM translation    Output dir: [output/   ]   │
-│                                                          │
-│  [  Convert  ]                                           │
-│                                                          │
-│  ── Live progress ──────────────────────────────────    │
-│  ✓ [parse]    IR loaded: VPFLookups_sync_PLE            │
-│  ✓ [analyze]  complexity: 6/15  connectors: sqlserver   │
-│  ✓ [classify] route: AUTO                               │
-│  ✓ [translate] 8/8 expressions resolved (rules)        │
-│  ✓ [generate] job_config.yaml written                   │
-│  ✓ [validate] schema valid ✅                            │
-│  ✓ [report]   migration_report.md written               │
-│  ✓ [gate]     ✅ AUTO APPROVED  confidence: 94%         │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Page 2: Pipeline Gallery
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Pipeline Gallery  [All ▾]  [Search...]  [Export CSV]          │
-│                                                                │
-│  Artifact               Source  Route        Confidence  Status│
-│  ─────────────────────────────────────────────────────────── │
-│  VPFLookups_sync_PLE    ADF     auto         94%    ✅ APPROVED│
-│  m_LOAD_CUSTOMERS       Infor.  auto         91%    ✅ APPROVED│
-│  wf_ETL_ORDERS_FULL     Infor.  human_review 78%    👁 REVIEW  │
-│  wf_LEGACY_COBOL_TRANS  SSIS    manual       42%    ✋ MANUAL  │
-│                                                                │
-│  Total: 4    Auto: 2    Review: 1    Manual: 1                 │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### Page 3: Human Review
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Review: wf_ETL_ORDERS_FULL   confidence: 78%   ⚠ HUMAN REVIEW  │
-│                                                                  │
-│  ┌── Original ADF JSON ──┐   ┌── Generated YAML ───────────┐   │
-│  │ "type": "Copy",       │   │ version: "2.0"              │   │
-│  │ "preCopyScript": ...  │   │ job:                        │   │
-│  │ "sqlReaderQuery": ... │   │   name: wf_etl_orders_full  │   │
-│  └───────────────────────┘   └──────────────────────────── ┘   │
-│                                                                  │
-│  ── Manual Queue (2 items requiring review) ──────────────────  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │ 1. @activity('CheckRowCount').output.firstRow.cnt        │   │
-│  │    Reason: activity output reference not supported       │   │
-│  │    Suggestion: replace with assert_row_count transform   │   │
-│  │                                                          │   │
-│  │ 2. Custom C# script in Script Task                       │   │
-│  │    Reason: imperative code — manual rewrite required     │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  Notes: [________________________________]                       │
-│  [  ✅ Approve  ]   [  ✏ Edit YAML  ]   [  ❌ Reject  ]        │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### Page 4: Migration Dashboard
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  Migration Progress — Week 8                             │
-│                                                          │
-│  67/700     92%          $840K         18 months         │
-│  Pipelines  Automation   Savings       to full decom.    │
-│  migrated   rate         realized                        │
-│                                                          │
-│  ── Progress by source ──────────────────────────────── │
-│  Informatica  ████████░░░░  42/500  (8%)                 │
-│  ADF          ██████░░░░░░  22/160  (14%)                │
-│  SSIS         ███░░░░░░░░░   3/40   (8%)                 │
-│                                                          │
-│  ── Confidence distribution ─────── ── Pipeline queue ─ │
-│  [histogram: most at 0.9–1.0]        Auto:    56         │
-│                                       Review:   8         │
-│                                       Manual:   3         │
-└──────────────────────────────────────────────────────────┘
+generic-etl-master/
+├── api/                          ← NEW: FastAPI backend
+│   ├── main.py                   ← app factory, CORS, lifespan
+│   ├── db.py                     ← SQLite schema + helpers (aiosqlite)
+│   ├── models.py                 ← Pydantic request/response models
+│   ├── routes/
+│   │   ├── upload.py             ← POST /api/upload
+│   │   ├── runs.py               ← GET /api/runs, GET /api/runs/{id}
+│   │   ├── review.py             ← POST /api/review/{id}, /api/resume/{id}
+│   │   ├── yamls.py              ← GET /api/yamls
+│   │   └── execute.py            ← POST /api/execute
+│   ├── ws/
+│   │   ├── run_stream.py         ← WS /ws/runs/{id}  (LangGraph stream)
+│   │   └── exec_stream.py        ← WS /ws/execute/{id}  (engine logs)
+│   └── uploads/                  ← temp upload storage
+│
+├── ui/                           ← NEW: React frontend
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── src/
+│   │   ├── main.tsx
+│   │   ├── App.tsx               ← routing (react-router v6)
+│   │   ├── api/
+│   │   │   ├── client.ts         ← fetch wrapper + WS helper
+│   │   │   └── types.ts          ← TypeScript types mirroring Pydantic models
+│   │   ├── pages/
+│   │   │   ├── UploadPage.tsx    ← drag-drop multi-file upload
+│   │   │   ├── RunsPage.tsx      ← portfolio table
+│   │   │   ├── RunDetailPage.tsx ← live 8-node progress
+│   │   │   ├── ReviewPage.tsx    ← IR tree + YAML diff + approve/reject
+│   │   │   ├── YamlsPage.tsx     ← YAML library browser
+│   │   │   └── ExecutePage.tsx   ← framework job runner
+│   │   ├── components/
+│   │   │   ├── NodeProgressRow.tsx  ← single node row with icon/status/timer
+│   │   │   ├── IrTreeView.tsx       ← collapsible IR JSON tree
+│   │   │   ├── YamlDiffEditor.tsx   ← Monaco editor (read IR yaml vs editable)
+│   │   │   ├── ConfidenceBadge.tsx  ← colour-coded % badge
+│   │   │   └── LogStream.tsx        ← auto-scrolling log terminal
+│   │   └── public/
+│
+├── agent/     (existing — unchanged)
+├── framework/ (existing — unchanged)
+└── pyproject.toml   ← add: fastapi, uvicorn, aiosqlite, python-multipart
 ```
 
 ---
 
-## 6. Framework UI — Page Designs
+## 5. Database Schema (SQLite — `ui_state.db`)
 
-### Page 5: Job Catalog
+```sql
+-- Conversion runs (one per uploaded artifact)
+CREATE TABLE runs (
+    id           TEXT PRIMARY KEY,    -- uuid4
+    artifact_id  TEXT NOT NULL,
+    filename     TEXT NOT NULL,
+    source_type  TEXT,                -- adf | informatica | ssis
+    status       TEXT NOT NULL,       -- queued | running | paused | done | failed
+    route        TEXT,                -- auto | human_review | manual
+    confidence   REAL,                -- 0.0 - 1.0
+    complexity   INTEGER,
+    yaml_type    TEXT,
+    report_path  TEXT,
+    ir_path      TEXT,
+    error        TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    state_blob   BLOB                 -- JSON snapshot of final AgentState
+);
 
-```
-┌───────────────────────────────────────────────────────────────┐
-│  Job Catalog   [connector: all ▾]  [status: all ▾]  [Search] │
-│                                                               │
-│  Job Name                Connector  Last Run   Status   Rows  │
-│  ──────────────────────────────────────────────────────────  │
-│  load_fact_orders        sqlserver  2 hrs ago  ✅ OK   448K   │
-│  load_dim_customer       azure_sql  1 day ago  ✅ OK    23K   │
-│  load_dim_product        postgres   3 days ago ✅ OK     8K   │
-│  wf_etl_orders_full      azure_sql  Never      ⬜ NEW    —    │
-│                                                               │
-│  [▶ Run selected]  [👁 View YAML]  [🔍 Test Connection]       │
-└───────────────────────────────────────────────────────────────┘
-```
+-- Human review queue (one per run needing review)
+CREATE TABLE reviews (
+    id           TEXT PRIMARY KEY,
+    run_id       TEXT NOT NULL REFERENCES runs(id),
+    status       TEXT NOT NULL,       -- pending | approved | rejected | edited
+    reviewer     TEXT,
+    decision     TEXT,                -- approved | rejected
+    edited_yaml  TEXT,                -- NULL unless reviewer edited the YAML
+    notes        TEXT,
+    created_at   TEXT NOT NULL,
+    resolved_at  TEXT
+);
 
-### Page 6: Job Runner
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  Run Job: load_fact_orders                                  │
-│                                                            │
-│  Parameters                                                │
-│  env:          [prod        ▾]                             │
-│  source_table: [dbo.orders   ]                             │
-│  batch_date:   [2026-05-14   ]                             │
-│                                                            │
-│  [  ▶ Run  ]   [🔌 Test Connection First]                  │
-│                                                            │
-│  ── Live Output ────────────────────────────────────────── │
-│  14:32:01  INFO  starting pipeline: load_fact_orders       │
-│  14:32:02  INFO  source read: 450,000 rows (3 columns)     │
-│  14:32:03  INFO  row_filter: 448,231 rows                  │
-│  14:32:05  INFO  lookup_enrich: 448,231 rows               │
-│  14:32:08  INFO  sink wrote: 448,231 rows ✅               │
-│  14:32:08  INFO  watermark updated: 2026-05-14T14:32:08    │
-│                                                            │
-│  Duration: 7.2s   Rows written: 448,231   Status: ✅ OK   │
-└────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 7. Implementation Sessions
-
-All sessions use Streamlit. Each prompt is intentionally compact to save tokens.
-
----
-
-### Session UI-0 — Setup + Shared Layout (prerequisite)
-
-**Duration:** ~20 min | **Files:** `pyproject.toml`, `ui/shared/state_store.py`, `ui/shared/styles.py`
-
-#### Prompt
-
-```
-Set up the Streamlit UI scaffold for the ETL platform.
-
-Read: #file:pyproject.toml  #file:docs/brainstorming/ui-implementation-plan.md (section 4)
-
-1. Add to pyproject.toml optional-dependencies:
-   ui = ["streamlit>=1.35", "plotly>=5.20", "streamlit-ace>=0.1"]
-
-2. Create ui/shared/state_store.py:
-   SQLite-backed store for run history (no external service).
-   class StateStore:
-     save_run(run_id, artifact_id, source_type, gate_status, confidence,
-              yaml_path, report_path, started_at, completed_at) -> None
-     get_runs(limit=100) -> list[dict]
-     get_run(run_id) -> dict | None
-     update_run(run_id, **kwargs) -> None
-   Use a single table: etl_ui_runs. Auto-create on first call.
-   Default db path: ui/data/runs.db (create dir if absent).
-
-3. Create ui/shared/styles.py — inject_css() function:
-   Status badge colors:
-     auto_approved → green background
-     human_queue   → amber
-     manual        → red
-     error         → dark red
-     pending       → grey
-   def status_badge(status: str) -> str:
-       returns HTML span with color-coded background.
-
-Test: python -c "from ui.shared.state_store import StateStore; s=StateStore(); print('ok')"
+-- Framework execution log (one per etl-run invocation)
+CREATE TABLE executions (
+    id           TEXT PRIMARY KEY,
+    yaml_path    TEXT NOT NULL,
+    params       TEXT,                -- JSON
+    status       TEXT NOT NULL,       -- running | done | failed
+    source_rows  INTEGER,
+    sink_rows    INTEGER,
+    duration_s   REAL,
+    error        TEXT,
+    created_at   TEXT NOT NULL
+);
 ```
 
 ---
 
-### Session UI-AG-1 — Upload Page + Live Agent Progress
+## 6. Session Implementation Plan
 
-**Duration:** ~50 min | **Files:** `ui/agent_app.py`, `ui/agent_pages/01_upload.py`
+**Token-efficient prompt format used throughout:**
+- `CONTEXT:` — files to open first (use `#file:` in GHCP)
+- `SCOPE:` — exactly what to build, nothing more
+- `DO:` — numbered steps
+- `TEST:` — verification command
 
-#### Prompt
+---
+
+### B1 — FastAPI Scaffold + DB + Upload API
+
+**Duration:** 45 min | **Files:** `api/main.py`, `api/db.py`, `api/models.py`, `api/routes/upload.py`
+**Dependencies to add:** `fastapi>=0.111`, `uvicorn[standard]>=0.29`, `aiosqlite>=0.19`, `python-multipart>=0.0.9`
 
 ```
-Build the agent Upload page in Streamlit with live LangGraph node progress.
+CONTEXT: #file:pyproject.toml  #file:agent/state.py
 
-Read:
-  #file:agent/graph.py
-  #file:agent/state.py
-  #file:agent/config.py
-  #file:ui/shared/state_store.py
-  #file:docs/brainstorming/ui-implementation-plan.md  (section 5, Page 1 wireframe)
+SCOPE: Create api/ package with FastAPI app, SQLite schema, and file upload endpoint.
+Do NOT implement WebSocket or LangGraph yet.
 
-1. Create ui/agent_app.py:
-   st.set_page_config(page_title="ETL Migration Agent", layout="wide")
-   sidebar: logo, nav links to all 4 pages, llm_enabled toggle
-   Import and run the upload page as default.
+DO:
+1. Add to pyproject.toml dependencies:
+     fastapi>=0.111, uvicorn[standard]>=0.29, aiosqlite>=0.19, python-multipart>=0.0.9
+     Add script: etl-ui = "api.main:start"
 
-2. Create ui/agent_pages/01_upload.py:
+2. Create api/db.py:
+   - DB_PATH = Path("ui_state.db")
+   - async get_db() → aiosqlite connection
+   - async init_db() → CREATE TABLE IF NOT EXISTS for runs, reviews, executions
+     (exact SQL from section 5 of ui-implementation-plan.md)
+   - async insert_run(id, filename, source_type, artifact_id) → None
+   - async get_run(id) → dict | None
+   - async list_runs(limit=100) → list[dict]
+   - async update_run(id, **kwargs) → None
 
-   UI elements:
-   - st.file_uploader("Drop pipeline files", type=["zip","xml","dtsx"],
-                       accept_multiple_files=True)
-   - st.toggle("Enable LLM translation", value=False)
-   - st.text_input("Output directory", value="output")
-   - st.button("Convert")
+3. Create api/models.py — Pydantic models:
+   class RunStatus(str, Enum): queued running paused done failed
+   class RunSummary(BaseModel): id artifact_id filename status route confidence complexity created_at
+   class RunDetail(RunSummary): yaml_path report_path ir_path error state_blob
 
-   On Convert click:
-   a. Save each uploaded file to a temp dir (tempfile.mkdtemp())
-   b. Build AgentConfig(llm_enabled=toggle_value, output_dir=output_dir)
-   c. For each file, run graph.stream(make_initial_state(path, config))
-   d. Show live progress using st.status():
-        with st.status("Converting...", expanded=True) as status_box:
-            for chunk in graph.stream(initial_state):
-                node_name = list(chunk.keys())[0]
-                node_state = chunk[node_name]
-                icon = "✓" if not node_state.get("parse_errors") else "✗"
-                st.write(f"{icon} [{node_name}]  {_node_summary(node_state, node_name)}")
-            status_box.update(label="Done", state="complete")
-   e. After all files: st.success / st.error summary
-   f. Save each run to StateStore
+4. Create api/routes/upload.py:
+   router = APIRouter(prefix="/api")
+   POST /api/upload
+   - Accept: multipart/form-data, fields: files=List[UploadFile], source_type=str|None
+   - For each file: save to api/uploads/{uuid}_{filename}, insert_run(), enqueue background task
+   - Background task: just set status="queued" for now (LangGraph wired in B2)
+   - Return: List[RunSummary]
 
-   def _node_summary(state, node_name) -> str:
-     Returns a one-line human-readable summary for each node:
-       parse    → "IR loaded: {artifact_id}  source: {source_type}"
-       analyze  → "complexity: {score}/15  connectors: {connector_types}"
-       classify → "route: {route.upper()}"
-       translate→ "{n} expressions resolved ({pct}% by rules)"
-       generate → "job_config.yaml written" or "skipped (manual route)"
-       validate → "schema valid ✅" or "ERRORS: {errors[0]}"
-       report   → "migration_report.md written"
-       gate     → "✅ AUTO APPROVED  confidence: {pct}%" or "👁 HUMAN QUEUE  confidence: {pct}%"
+5. Create api/main.py:
+   - FastAPI app with lifespan calling init_db()
+   - Mount upload router
+   - CORS: allow localhost:5173 (Vite dev server)
+   - GET / → {"status": "ok", "version": "1.0"}
+   - def start(): uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)
 
-Test: streamlit run ui/agent_app.py
-      Upload sample_informatica/m_LOAD_CUSTOMERS.xml — all 8 nodes should appear.
+TEST: uvicorn api.main:app --reload
+  # Upload a file via POST /api/upload
+  # Connect to ws://localhost:8000/ws/runs/{id} with wscat or browser console
+  # Should receive 2 node update messages
 ```
 
 ---
 
-### Session UI-AG-2 — Pipeline Gallery
+### B2 — LangGraph WebSocket Streaming
 
-**Duration:** ~30 min | **Files:** `ui/agent_pages/02_gallery.py`
-
-#### Prompt
+**Duration:** 45 min | **Files:** `api/ws/run_stream.py`, `api/routes/runs.py`
 
 ```
-Build the Pipeline Gallery page — shows all past agent runs with status badges.
+CONTEXT: #file:agent/graph.py  #file:agent/state.py  #file:api/db.py  #file:api/models.py
 
-Read:
-  #file:ui/shared/state_store.py
-  #file:ui/shared/styles.py
-  #file:docs/brainstorming/ui-implementation-plan.md  (section 5, Page 2 wireframe)
+SCOPE: Wire LangGraph graph.stream() to a WebSocket endpoint and a background task runner.
+The background task converts queued runs; the WebSocket publishes each node update to browser.
 
-Create ui/agent_pages/02_gallery.py:
+DO:
+1. Create api/ws/run_stream.py:
+   - ConnectionManager class: dict[run_id, set[WebSocket]]
+     methods: connect(run_id, ws), disconnect(run_id, ws), broadcast(run_id, msg: dict)
+   - manager = ConnectionManager()  (module singleton)
 
-Columns: artifact_id, source_type, route, confidence (%), gate_status (badge),
-         started_at, yaml_path (link), report_path (link)
+2. Create api/routes/runs.py:
+   router = APIRouter(prefix="/api")
+   GET /api/runs → list_runs() from db → List[RunSummary]
+   GET /api/runs/{id} → get_run(id) → RunDetail (404 if missing)
 
-UI:
-- st.selectbox filter: All / auto_approved / human_queue / manual / error
-- st.text_input search by artifact_id
-- st.dataframe with color formatting:
-    gate_status column → use st.column_config.TextColumn with custom formatting
-    confidence → st.column_config.ProgressColumn (0.0–1.0)
-- Row click → st.session_state.selected_run = run_id → navigate to Review page
-- Summary row: counts by status + average confidence
+3. Add WS route to api/main.py:
+   WS /ws/runs/{run_id}
+   - ws.accept(), manager.connect(run_id, ws) immediately on connect
+   - Send current state snapshot from db immediately
+   - Receive loop: handle "ping" message, disconnect on close
 
-def load_runs(filter_status, search_term) -> pd.DataFrame:
-    runs = StateStore().get_runs()
-    df = pd.DataFrame(runs)
-    if filter_status != "All":
-        df = df[df.gate_status == filter_status]
-    if search_term:
-        df = df[df.artifact_id.str.contains(search_term, case=False)]
-    return df
+4. Create api/tasks/convert.py:
+   async def run_conversion(run_id: str, artifact_path: str, source_type: str | None):
+       """Execute LangGraph graph for one artifact, streaming updates to WebSocket."""
+       from agent.graph import build_graph
+       import uuid, json
+       from datetime import datetime, timezone
 
-Test: streamlit run ui/agent_app.py  → navigate to Gallery
-      Confirm runs from Upload page appear here.
-```
+       await update_run(run_id, status="running")
+       initial_state = {
+           "run_id": run_id, "artifact_id": Path(artifact_path).stem,
+           "source_type": source_type or "", "raw_artifact_path": artifact_path,
+           "started_at": datetime.now(timezone.utc).isoformat(),
+           "llm_enabled": False, "output_dir": f"output/ui/{run_id}",
+           "error_log": [], "retry_count": {}, "confidence_scores": {},
+           "complexity_dims": {}, "connector_types": [], "transform_types": [],
+           "translated_expressions": {}, "manual_queue": [], "generated_artifacts": {},
+           "validation_errors": [], "validation_warnings": [], "gate_status": {},
+           "pre_steps": [], "post_steps": [],
+           "translation_confidence": 0.0, "overall_confidence": 0.0,
+       }
+       compiled = build_graph()
+       final = {}
+       try:
+           for chunk in compiled.stream(initial_state, stream_mode="updates"):
+               for node_name, updates in chunk.items():
+                   await manager.broadcast(run_id, {"node": node_name, "updates": updates})
+               final.update(updates)
+       except Exception as e:
+           await update_run(run_id, status="failed", error=str(e))
+           await manager.broadcast(run_id, {"node": "__error__", "error": str(e)})
+           return
 
----
+       gate = final.get("gate_status", {})
+       needs_review = gate.get("overall_confidence", 1) < "human_review"
+       status = "paused" if needs_review else "done"
+       await update_run(run_id,
+           status=status,
+           route=final.get("route"),
+           confidence=final.get("overall_confidence", 0),
+           complexity=final.get("complexity_score", 0),
+           yaml_path=final.get("yaml_path"),
+           report_path=final.get("report_path"),
+           state_blob=json.dumps(final, default=str),
+       )
+       if needs_review:
+           await insert_review(run_id)
+       await manager.broadcast(run_id, {"node": "__done__", "status": status})
 
-### Session UI-AG-3 — Human Review Page
+5. Wire upload background task to call run_conversion (see BackgroundTasks).
 
-**Duration:** ~55 min | **Files:** `ui/agent_pages/03_review.py`
-
-#### Prompt
-
-```
-Build the Human Review page — side-by-side original vs generated YAML, manual queue, approve/reject.
-
-Read:
-  #file:ui/shared/state_store.py
-  #file:agent/state.py
-  #file:docs/brainstorming/ui-implementation-plan.md  (section 5, Page 3 wireframe)
-
-Create ui/agent_pages/03_review.py:
-
-Layout: full-width, 3 sections
-
-Section 1 — Header bar:
-  artifact_id | source_type | confidence badge | route badge | gate_status badge
-  If gate_status is already auto_approved: show read-only banner, no approve buttons.
-
-Section 2 — Side-by-side diff (only for human_queue pipelines):
-  col1, col2 = st.columns(2)
-  col1: st.subheader("Original config")
-        Load original: if ADF, read the pipeline JSON from output/<id>/ir.json["raw"]
-        st.code(json.dumps(original, indent=2), language="json")
-  col2: st.subheader("Generated YAML")
-        Load yaml_path from StateStore run record
-        yaml_content = Path(yaml_path).read_text()
-        st.code(yaml_content, language="yaml")
-        st.download_button("Download YAML", yaml_content, file_name=f"{artifact_id}.yaml")
-
-Section 3 — Manual queue + actions:
-  Load manual_queue from output/<id>/migration_report.json
-  if manual_queue:
-      st.warning(f"{len(manual_queue)} items need manual review")
-      for i, item in enumerate(manual_queue):
-          with st.expander(f"Item {i+1}: {item['expression'][:60]}..."):
-              st.write(f"**Reason:** {item['reason']}")
-              st.write(f"**Suggested approach:** {item['suggested_approach']}")
-
-  notes = st.text_area("Review notes (saved to report)")
-  col_a, col_b, col_c = st.columns(3)
-  with col_a:
-      if st.button("✅ Approve", type="primary"):
-          StateStore().update_run(run_id, gate_status="approved_by_human",
-                                   review_notes=notes, reviewed_at=now())
-          st.success("Approved — YAML is ready to deploy.")
-  with col_b:
-      if st.button("✏ Edit YAML"):
-          st.session_state.edit_mode = True
-  with col_c:
-      if st.button("❌ Reject"):
-          StateStore().update_run(run_id, gate_status="rejected", review_notes=notes)
-          st.error("Rejected — pipeline returned to manual queue.")
-
-  Edit mode: replace col2 st.code with streamlit_ace editor (ACE editor):
-      from streamlit_ace import st_ace
-      edited = st_ace(value=yaml_content, language="yaml", theme="monokai", height=400)
-      if st.button("Save edits"):
-          Path(yaml_path).write_text(edited)
-          st.success("YAML saved.")
-
-Test: streamlit run ui/agent_app.py → Gallery → click a human_queue run → Review page
+TEST: uvicorn api.main:app --reload
+  # Upload a file via POST /api/upload
+  # Connect to ws://localhost:8000/ws/runs/{id} with wscat or browser console
+  # Should receive 8 node update messages
 ```
 
 ---
 
-### Session UI-AG-4 — Migration Dashboard
+### B3 — Human Review API
 
-**Duration:** ~35 min | **Files:** `ui/agent_pages/04_dashboard.py`
-
-#### Prompt
+**Duration:** 30 min | **Files:** `api/routes/review.py`
 
 ```
-Build the Migration Dashboard with KPIs and charts.
+CONTEXT: #file:api/db.py  #file:api/models.py  #file:api/tasks/convert.py
 
-Read:
-  #file:ui/shared/state_store.py
-  #file:docs/brainstorming/ui-implementation-plan.md  (section 5, Page 4 wireframe)
-  #file:docs/architecture/08-migration-playbook.md    (section 2 triage tiers)
+SCOPE: REST endpoints for listing the review queue, submitting a decision,
+and resuming a paused run. No frontend yet.
 
-Create ui/agent_pages/04_dashboard.py:
+DO:
+1. Add to api/db.py:
+   - async insert_review(run_id) → inserts reviews row, status="pending"
+   - async get_pending_reviews() → list[dict]
+   - async resolve_review(run_id, decision, edited_yaml, reviewer) → None
 
-KPI row (st.metric):
-  col1: "Pipelines migrated" = count(gate_status in [auto_approved, approved_by_human])
-  col2: "Automation rate" = count(auto_approved) / total * 100  (delta vs last week)
-  col3: "Human queue" = count(human_queue)
-  col4: "Avg confidence" = mean(overall_confidence) of all runs
+2. Create api/routes/review.py:
+   router = APIRouter(prefix="/api")
 
-Progress by source (st.progress bars):
-  group runs by source_type → count migrated vs total
-  Total pipeline targets from constants: {informatica: 500, adf: 160, ssis: 40}
-  For each source:
-      pct = migrated / target
-      st.write(f"{source_type}  {migrated}/{target}  ({pct:.0%})")
-      st.progress(pct)
+   GET /api/review
+   - get_pending_reviews() sorted by created_at
+   - return list[{run_id, filename, confidence, warnings, yaml_path, ir_path}]
 
-Confidence distribution (Plotly histogram):
-  import plotly.express as px
-  fig = px.histogram(df, x="overall_confidence", nbins=20,
-                     title="Confidence Score Distribution",
-                     color_discrete_sequence=["#2196F3"])
-  fig.add_vline(x=0.90, line_dash="dash", annotation_text="Auto-approve threshold")
-  st.plotly_chart(fig, use_container_width=True)
+   GET /api/review/{run_id}
+   - get_review_by_run
+   - return {run: RunDetail, review: ReviewRow, ir: dict, yaml_path: str}
+     read ir.json and job_config.yaml from disk and embed in response
 
-Pipeline status breakdown (Plotly donut):
-  fig2 = px.pie(status_counts, values="count", names="status", hole=0.5,
-                color_discrete_map={"auto_approved":"green","human_queue":"orange",
-                                    "manual":"red","error":"darkred"})
-  st.plotly_chart(fig2, use_container_width=True)
+   POST /api/review/{run_id}
+   Body: {decision: "approved"|"rejected", edited_yaml: str|None, notes: str|None}
+   - Validate decision value
+   - If edited_yaml: write it back to yaml_path (overwrite)
+   - resolve_review(...)
+   - update_run(run_id, status="done" if approved else "rejected")
+   - Return {status: "ok"}
 
-Migration timeline (Plotly line):
-  group runs by date, cumulative count
-  st.plotly_chart(cumulative line chart, use_container_width=True)
+   POST /api/resume/{run_id}
+   - Load state_blob from runs table
+   - Re-run ONLY the generate→validate→report→gate nodes
+     (skip parse/analyze/classify/translate — use saved IR + yaml)
+   - Actually: just set status="done", broadcast completion
+     (full re-run is a Phase 2 feature)
+   - Return {status: "ok", run_id: run_id}
 
-Test: streamlit run ui/agent_app.py → Dashboard
-      Seed test data via StateStore.save_run() with varied statuses.
-```
-
----
-
-### Session UI-FW-1 — Job Catalog Page
-
-**Duration:** ~30 min | **Files:** `ui/framework_app.py`, `ui/framework_pages/05_catalog.py`
-
-#### Prompt
-
-```
-Build the Framework UI Job Catalog page.
-
-Read:
-  #file:framework/config/loader.py
-  #file:ui/shared/state_store.py
-  #file:docs/brainstorming/ui-implementation-plan.md  (section 6, Page 5 wireframe)
-
-1. Create ui/framework_app.py:
-   st.set_page_config(page_title="ETL Framework", layout="wide")
-   sidebar: config dir path input (default: configs/), nav links to 3 pages
-
-2. Create ui/framework_pages/05_catalog.py:
-
-def scan_configs(config_dir: str) -> list[dict]:
-    """Scan directory for .yaml files, load job metadata + last run from StateStore."""
-    jobs = []
-    for f in Path(config_dir).glob("*.yaml"):
-        try:
-            cfg = load_config(f)
-            last_run = StateStore().get_last_run_for_job(cfg["job"]["name"])
-            jobs.append({
-                "name": cfg["job"]["name"],
-                "connector": _primary_connector(cfg),
-                "schedule": cfg["job"].get("schedule", "—"),
-                "tier": cfg["job"].get("execution_tier", "pandas"),
-                "last_run": last_run.get("completed_at", "Never") if last_run else "Never",
-                "last_status": last_run.get("status", "⬜ NEW") if last_run else "⬜ NEW",
-                "last_rows": last_run.get("rows_written", "—") if last_run else "—",
-                "_path": str(f),
-            })
-        except Exception as e:
-            jobs.append({"name": f.stem, "last_status": f"❌ INVALID: {e}"})
-    return jobs
-
-UI:
-- Filter row: connector selectbox, status selectbox, text search
-- st.dataframe with columns: name, connector, schedule, tier, last_run, last_status, last_rows
-- Action buttons below table:
-    [▶ Run selected]  → navigate to Runner page with selected job pre-filled
-    [👁 View YAML]    → st.code(yaml content, language="yaml") in modal expander
-    [🔌 Test Connection] → run ConnectionTester.test_all(config), show results inline
-
-Add get_last_run_for_job(job_name) to StateStore.
-
-Test: streamlit run ui/framework_app.py
-      Put a couple of YAML configs in configs/ → confirm they appear.
+TEST: uvicorn api.main:app --reload
+  curl http://localhost:8000/api/review  # list pending
+  curl -X POST http://localhost:8000/api/review/{id} \
+    -H "Content-Type: application/json" \
+    -d '{"decision":"approved","notes":"Looks good"}'
 ```
 
 ---
 
-### Session UI-FW-2 — Job Runner + Live Log Streaming
+### B4 — Framework Execution API
 
-**Duration:** ~50 min | **Files:** `ui/framework_pages/06_runner.py`
-
-#### Prompt
+**Duration:** 30 min | **Files:** `api/routes/yamls.py`, `api/routes/execute.py`, `api/ws/exec_stream.py`
 
 ```
-Build the Job Runner page with parameter inputs and live log streaming.
+CONTEXT: #file:framework/runner.py  #file:framework/execution/engine.py  #file:api/db.py
 
-Read:
-  #file:framework/runner.py
-  #file:framework/config/loader.py
-  #file:framework/config/resolver.py
-  #file:ui/shared/state_store.py
-  #file:docs/brainstorming/ui-implementation-plan.md  (section 6, Page 6 wireframe)
+SCOPE: Endpoints to list generated YAMLs, run one via ExecutionEngine,
+and stream execution logs over WebSocket.
 
-Create ui/framework_pages/06_runner.py:
+DO:
+1. Create api/routes/yamls.py:
+   GET /api/yamls
+   - Glob output/**/*.yaml (exclude *_draft*)
+   - For each: read job.name, version from YAML header (pyyaml load first 5 keys only)
+   - Return list[{path, name, version, size_bytes, modified_at, has_review}]
+     has_review = run exists in db for this path with status != "rejected"
 
-Step 1 — Job selection:
-  If st.session_state has selected_job (from Catalog page): pre-select it.
-  Otherwise: st.selectbox to pick from scanned configs.
-  Show YAML preview in expander below selector.
+   GET /api/yamls/content?path=...
+   - Read file, return {yaml: str, valid: bool}
+   - valid = try validate_config(yaml.safe_load(content))
 
-Step 2 — Parameter inputs:
-  Load config["parameters"] block (dict of param_name → default_value).
-  For each parameter: st.text_input(label=param_name, value=default_value)
-  Collect as params dict.
+2. Create api/ws/exec_stream.py:
+   - Same ConnectionManager pattern as run_stream.py
+   - exec_manager = ConnectionManager()
 
-Step 3 — Run controls:
-  col1, col2 = st.columns([1, 4])
-  with col1: run_btn = st.button("▶ Run", type="primary")
-  with col2: test_btn = st.button("🔌 Test Connection First")
+3. Create api/routes/execute.py:
+   GET /api/executions → list recent executions from db
 
-  On test_btn:
-      config = load_config(yaml_path)
-      results = ConnectionTester().test_all(config)
-      for r in results:
-          icon = "✅" if r.ok else "❌"
-          st.write(f"{icon} {r.role}  {r.connector_type}  {r.connection_ref}  "
-                   f"{r.latency_ms}ms" if r.ok else f"  ERROR: {r.error}")
+4. Create api/tasks/run_framework.py:
+   async def run_framework_job(exec_id, yaml_path, params):
+   - Set up logging handler that broadcasts to exec_manager
+   - Load and validate config (framework.config.loader + validator)
+   - Call ExecutionEngine().run(config, params)
+   - Capture source_rows, sink_rows from engine metrics
+   - Update executions row: status=done/failed, source_rows, sink_rows, duration_s
 
-  On run_btn:
-      run_id = str(uuid4())
-      log_placeholder = st.empty()
-      metric_cols = st.columns(4)
-      # Add a custom log handler that pushes to a queue
-      log_queue = queue.Queue()
-      handler = QueueLogHandler(log_queue)
-      logging.getLogger("framework").addHandler(handler)
+   The log handler (LogCapture) intercepts Python logging records and
+   calls asyncio.get_event_loop().call_soon_threadsafe(broadcast, exec_id, msg)
 
-      def run_in_thread():
-          try:
-              config = load_and_resolve(yaml_path, params)
-              engine = ExecutionEngine(config)
-              engine.run()
-          except Exception as e:
-              log_queue.put(("ERROR", str(e)))
-          finally:
-              log_queue.put(("DONE", None))
-
-      thread = threading.Thread(target=run_in_thread, daemon=True)
-      thread.start()
-
-      log_lines = []
-      rows_written = 0
-      while True:
-          try:
-              level, msg = log_queue.get(timeout=0.1)
-              if level == "DONE": break
-              log_lines.append(f"{datetime.now():%H:%M:%S}  {level:<6}  {msg}")
-              log_placeholder.code("\n".join(log_lines[-50:]))   # last 50 lines
-              if "sink wrote:" in msg:
-                  rows_written = int(re.search(r"(\d+) rows", msg).group(1))
-                  metric_cols[0].metric("Rows written", f"{rows_written:,}")
-          except queue.Empty:
-              continue
-
-      StateStore().save_job_run(run_id, job_name, params, rows_written, status)
-
-class QueueLogHandler(logging.Handler):
-    def __init__(self, q): super().__init__(); self.q = q
-    def emit(self, record): self.q.put((record.levelname, self.format(record)))
-
-Test: streamlit run ui/framework_app.py → Catalog → select a job → Runner
-      Fill params, click Run — live logs should appear.
+TEST: POST /api/execute with yaml_path from /api/yamls response
+  Connect to ws://localhost:8000/ws/execute/{exec_id}
+  Expect streaming log messages ending with __done__
 ```
 
 ---
 
-### Session UI-FW-3 — Job History
+### F1 — React App Scaffold
 
-**Duration:** ~25 min | **Files:** `ui/framework_pages/07_history.py`
-
-#### Prompt
+**Duration:** 30 min | **Files:** `ui/` (new directory)
 
 ```
-Build the Job History page.
+SCOPE: Create React+TypeScript+Tailwind app with routing and layout shell.
+Use Vite, react-router-dom v6, shadcn/ui, lucide-react icons.
+No page logic yet — just placeholders.
 
-Read:
-  #file:ui/shared/state_store.py
-  #file:docs/brainstorming/ui-implementation-plan.md  (section 6, Page 7)
+DO:
+cd ui && npm create vite@latest . -- --template react-ts
+npm install react-router-dom @radix-ui/react-slot lucide-react tailwindcss postcss autoprefixer
+npx tailwindcss init -p
+npx shadcn@latest init  (select: slate theme, CSS vars, yes src/components/ui/)
 
-Add to StateStore:
-  save_job_run(run_id, job_name, params, rows_written, status, duration_sec,
-               started_at, completed_at) -> None
-  get_job_runs(job_name=None, limit=200) -> list[dict]
+Create src/App.tsx with BrowserRouter + Routes:
+  /          → redirect to /runs
+  /upload    → UploadPage
+  /runs      → RunsPage
+  /runs/:id  → RunDetailPage
+  /review    → ReviewQueuePage
+  /review/:id → ReviewPage
+  /yamls     → YamlsPage
+  /execute/:id → ExecutePage
 
-Create ui/framework_pages/07_history.py:
+Create src/components/Layout.tsx:
+  Left sidebar nav with icons + labels:
+    Upload · All Runs · Review Queue · YAML Library · Executions
+  Top bar: "ETL Migration Platform" wordmark + env badge (dev/prod)
 
-Filters: job_name selectbox, status selectbox (OK/FAILED/RUNNING), date range
-Table columns: run_id (truncated), job_name, status badge, started_at,
-               duration_sec, rows_written, params (JSON expander)
-
-On row click: show full log (if stored) in expander below table.
-
-Summary metrics at top:
-  Total runs | Success rate | Avg rows/run | Avg duration
-
-Plotly chart: daily run count × success/fail stacked bar.
-
-Test: streamlit run ui/framework_app.py → History
-      Confirm runs from Runner page appear here.
+TEST: npm run dev → sidebar renders, routes navigate without 404
 ```
 
 ---
 
-## 8. Session Order & Estimated Time
+### F2 — Upload Page (drag-drop)
 
-| Session | UI | Files | Time | Status |
+**Duration:** 35 min | **Files:** `ui/src/pages/UploadPage.tsx`
+
+```
+CONTEXT: #file:api/routes/upload.py  #file:ui/src/api/client.ts
+
+SCOPE: Drag-drop multi-file upload that POSTs to /api/upload and navigates
+to RunsPage on success. Source type selector. Upload progress per file.
+
+DO:
+1. Create ui/src/api/client.ts:
+   - BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000"
+   - apiPost(path, body) → fetch wrapper
+   - wsConnect(path) → new WebSocket(BASE_URL.replace("http","ws") + path)
+
+2. Create ui/src/api/types.ts:
+   - Mirror RunSummary, RunDetail, ReviewRow from Pydantic models
+
+3. Create UploadPage.tsx:
+   - DropZone: accept .zip .xml .dtsx, multi-file
+   - SourceType select: auto-detect | adf | informatica | ssis
+   - On drop: POST /api/upload (FormData), show per-file progress bar
+   - On success: navigate to /runs, toast "N runs queued"
+
+TEST: Drop file → POST succeeds → /runs shows new row with status=queued
+```
+
+---
+
+### F3 — Live Run Detail (8-node progress)
+
+**Duration:** 45 min | **Files:** `ui/src/pages/RunDetailPage.tsx`, `ui/src/components/NodeProgressRow.tsx`
+
+```
+CONTEXT: #file:api/ws/run_stream.py  #file:ui/src/api/client.ts
+
+SCOPE: RunDetailPage opens WS /ws/runs/{id} and animates 8 node rows
+as messages arrive. Each row shows: icon, name, status dot, elapsed time.
+Show confidence + route badge when gate node completes.
+
+DO:
+1. NodeProgressRow.tsx props: {name, status, elapsed_ms, icon}
+   - status: pending | running | done | failed
+   - Spinning loader when running, green check when done, red X when failed
+   - Timer increments while status=running using useEffect + setInterval
+
+2. RunDetailPage.tsx:
+   - Load GET /api/runs/{id} on mount for initial state
+   - Open WS /ws/runs/{id}, update node states on each message
+   - Render 8 NodeProgressRow components in order
+   - Right panel: confidence badge, route chip (auto/human_review/manual)
+   - If status=paused: show "Awaiting Review" banner + link to /review/{id}
+   - If status=done: show "View YAML" button linking to /yamls
+
+TEST: Upload file → navigate to /runs/{id} → watch nodes animate live
+```
+
+---
+
+### F4 — Human Review (IR tree + YAML diff)
+
+**Duration:** 50 min | **Files:** `ui/src/pages/ReviewPage.tsx`, `ui/src/components/YamlDiffEditor.tsx`, `ui/src/components/IrTreeView.tsx`
+
+```
+CONTEXT: #file:api/routes/review.py  #file:ui/src/api/types.ts
+
+SCOPE: ReviewPage loads GET /api/review/{id}, shows:
+- Left: IrTreeView (collapsible JSON tree of IR)
+- Centre: YamlDiffEditor (Monaco diff: original IR-based yaml vs current yaml)
+- Right: warnings list + Approve/Reject/Edit buttons
+On approve/reject: POST /api/review/{id} → navigate back to queue.
+
+DO:
+1. Install Monaco: npm install @monaco-editor/react
+
+2. IrTreeView.tsx:
+   - Recursive collapsible tree for IR JSON
+   - Highlight connector_types and transform_types keys in colour
+
+3. YamlDiffEditor.tsx:
+   - Monaco DiffEditor (original=ir_yaml, modified=editable)
+   - onChange captures edited content for submission
+
+4. ReviewPage.tsx:
+   - GET /api/review/{id} on mount
+   - Three-panel layout (25% IR | 50% diff | 25% actions)
+   - Actions panel: confidence badge, warnings list, notes textarea,
+     [Approve] [Reject] [Edit + Approve] buttons
+   - On submit: POST /api/review/{id} with decision + edited_yaml + notes
+   - Navigate back to /review on success
+
+TEST: Create a run with human_review route → open /review/{id}
+  Edit YAML → click Approve → run status = done in /runs
+```
+
+---
+
+### F5 — Framework Executor + Log Stream
+
+**Duration:** 40 min | **Files:** `ui/src/pages/ExecutePage.tsx`, `ui/src/components/LogStream.tsx`
+
+```
+CONTEXT: #file:api/routes/execute.py  #file:api/ws/exec_stream.py
+
+SCOPE: ExecutePage shows YAML name + param inputs, posts to /api/execute,
+then streams logs from WS /ws/execute/{id} in LogStream component.
+
+DO:
+1. LogStream.tsx:
+   - Scrollable terminal-style div, monospace font, dark bg
+   - Auto-scroll to bottom on new message
+   - Colour-code: ERROR=red, WARNING=yellow, INFO=white
+   - Show row count badges if message matches "[source] read N" pattern
+
+2. ExecutePage.tsx (routed as /execute/:id where id=yaml name):
+   - Load YAML content from GET /api/yamls/content?path=...
+   - Show read-only Monaco YAML preview
+   - Param override inputs (key=value pairs from YAML params section)
+   - [▶ Run] button: POST /api/execute → get exec_id → open WS /ws/execute/{exec_id}
+   - Show LogStream below the YAML
+   - On __done__: show summary card (source_rows, sink_rows, duration_s)
+
+TEST: Navigate to /execute/load_vpf → run → see streaming logs → summary card
+```
+
+---
+
+### F6 — Portfolio Dashboard
+
+**Duration:** 35 min | **Files:** `ui/src/pages/RunsPage.tsx`
+
+```
+CONTEXT: #file:api/routes/runs.py  #file:ui/src/api/types.ts
+
+SCOPE: RunsPage is the portfolio table showing all conversion runs.
+KPI cards at top. Filterable table below. Click row → /runs/{id}.
+
+DO:
+1. KPI cards (4 across):
+   - Total runs / Done (green) / In review (amber) / Failed (red)
+   - Avg confidence % / Complexity distribution (P0/P1/P2/P3)
+
+2. Filterable table columns:
+   Filename | Source | Status badge | Route chip | Confidence | Created | Actions
+
+3. Status badges (colour-coded):
+   queued=grey, running=blue-pulse, paused=amber, done=green, failed=red
+
+4. Route chips:
+   auto=green, human_review=amber, manual=red
+
+5. Click row → navigate to /runs/{id}
+   Actions column: [View YAML] [Review] (conditional on status)
+
+6. Polling: refetch GET /api/runs every 5 seconds while any run is "running"
+
+TEST: Upload 3 files → RunsPage shows 3 rows with correct badges and KPI counts
+```
+
+---
+
+## 7. Summary Session Map
+
+| Phase | Session | What it builds | Duration | Exit test |
 |---|---|---|---|---|
-| **UI-0** | Both | shared/state_store.py, shared/styles.py | 20 min | 🔲 |
-| **UI-AG-1** | Agent | agent_app.py, 01_upload.py | 50 min | 🔲 |
-| **UI-AG-2** | Agent | 02_gallery.py | 30 min | 🔲 |
-| **UI-AG-3** | Agent | 03_review.py | 55 min | 🔲 |
-| **UI-AG-4** | Agent | 04_dashboard.py | 35 min | 🔲 |
-| **UI-FW-1** | Framework | framework_app.py, 05_catalog.py | 30 min | 🔲 |
-| **UI-FW-2** | Framework | 06_runner.py | 50 min | 🔲 |
-| **UI-FW-3** | Framework | 07_history.py | 25 min | 🔲 |
-| **Total** | | | **~5.5 hrs** | |
-
-**Prerequisite:** LangGraph sessions (LG-0 through LG-7) must be complete before UI-AG-1
-so `agent.graph.build_graph()` is importable.
-
----
-
-## 9. Executive Demo Checklist
-
-Before showing to execs, verify these work end-to-end:
-
-```
-□ Upload page: drag a real ADF ZIP → all 8 nodes complete → gate shows AUTO APPROVED
-□ Gallery page: run appears with green badge, correct confidence %
-□ Review page: upload a borderline pipeline (complexity > 8) → human_queue appears
-□ Review page: edit YAML in ACE editor → save → approve → status updates
-□ Dashboard: KPIs update after a few uploads
-□ Job catalog: shows your migrated YAML configs
-□ Job runner: Test Connection → all green → Run → rows appear in log
-□ Job history: run record appears with correct row count
-□ Both UIs: no browser errors in console during demo
-□ Demo machine: both streamlit processes running on :8501 and :8502
-```
+| Backend | B1 | FastAPI + DB + upload API | 45 min | `curl POST /api/upload → 200` |
+| Backend | B2 | LangGraph WebSocket streaming | 45 min | `wscat receives 8 node msgs` |
+| Backend | B3 | Human review API | 30 min | `curl POST /api/review → 200` |
+| Backend | B4 | Framework execution API | 30 min | `WS streams execution logs` |
+| Frontend | F1 | App scaffold + routing + layout | 30 min | `npm run dev → sidebar renders` |
+| Frontend | F2 | Upload page (drag-drop) | 35 min | `Drop file → upload succeeds` |
+| Frontend | F3 | Live run detail (8-node dashboard) | 45 min | `Nodes animate in real time` |
+| Frontend | F4 | Human review (IR + YAML diff) | 50 min | `Edit YAML + approve → done` |
+| Frontend | F5 | Framework executor + log stream | 40 min | `Run YAML → see live logs` |
+| Frontend | F6 | Portfolio dashboard (exec view) | 35 min | `KPI cards + table + chart` |
+| **Total** | | | **6.5 hr** | |
 
 ---
 
-## 10. Token Efficiency Notes for GHCP Sessions
+## 8. Token Budget Per Session
 
-Keep prompts under 400 tokens by:
-1. Reference `#file:` for code context — don't copy-paste file contents into prompt
-2. State only the new code, not what already exists
-3. Use one-line descriptions for each method — GHCP fills in the implementation
-4. Give the test command — GHCP writes tests to make it pass
-5. Each session touches ONE page file — no multi-file sessions except UI-0
+To keep each GHCP session under 4000 tokens:
+- Open only the `CONTEXT:` files listed, nothing else
+- Do not include test files in context unless fixing a test failure
+- One session = one `api/*.py` or one `ui/src/pages/*.tsx` — never both
+- Use `#file:` references instead of pasting code blocks
+
+---
+
+## 9. Prerequisites Before Starting B1
+
+| Check | What to verify | Command |
+|---|---|---|
+| `agent/graph.py` | exports `build_graph() → CompiledGraph` | `python -c "from agent.graph import build_graph; g=build_graph(); print(type(g))"` |
+| `agent/state.py` | `AgentState` TypedDict includes `error_log`, `retry_count`, `confidence_scores` | `python -c "from agent.state import AgentState; print(AgentState.__annotations__.keys())"` |
+| `framework/execution/engine.py` | `ExecutionEngine().run(config, params)` call signature | `python -c "from framework.execution.engine import ExecutionEngine; help(ExecutionEngine.run)"` |
+| Node names | 8 nodes match B2 initial_state keys | Check `build_graph()` node names in LangGraph |
+
+---
+
+## 10. Deployment Path (After POC)
+
+| Stage | How |
+|---|---|
+| Dev (now) | `uvicorn api.main:app --reload` + `npm run dev` |
+| Demo | `npm run build → api/static/`, FastAPI serves static files |
+| Staging | Docker: `FROM python:3.12-slim + npm run build baked in` |
+| Production | AWS ECS (API) + CloudFront (static) + RDS PostgreSQL (replace SQLite) |
+
+---
+
+## 11. Executive Demo Checklist (before exec review)
+
+- [ ] `uvicorn api.main:app --reload` starts without errors
+- [ ] `npm run dev` starts on :5173 without errors
+- [ ] Drop 3 test files → all 3 appear in RunsPage within 2 seconds
+- [ ] At least 1 auto-approved run completes and shows YAML
+- [ ] At least 1 human_review run pauses and appears in Review Queue
+- [ ] Review page loads IR tree, YAML diff, approve/reject buttons
+- [ ] After approval, run status → done
+- [ ] ExecutePage runs a YAML and streams logs in real time
+- [ ] RunsPage KPI cards show correct counts
